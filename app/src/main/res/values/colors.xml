@@ -1,0 +1,6 @@
+<resources>
+    <color name="paper">#F0EBE0</color>
+    <color name="ink">#1B1914</color>
+    <color name="accent">#C9431F</color>
+    <color name="paper_night">#14130F</color>
+</resources>

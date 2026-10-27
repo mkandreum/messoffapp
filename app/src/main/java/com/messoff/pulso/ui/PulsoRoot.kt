@@ -341,7 +341,7 @@ fun Splash(label: String) {
     Column(Modifier.fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         LogoMark(52.dp)
         Spacer(Modifier.height(10.dp))
-        Text("pulso", style = Type.serif(34.sp, italic = true), color = c.ink)
+        Text("messoff", style = Type.serif(34.sp, italic = true), color = c.ink)
         Spacer(Modifier.height(6.dp))
         Text(label, style = Type.bodySmall, color = c.ink3)
     }
@@ -351,7 +351,7 @@ fun Splash(label: String) {
 fun LoadError(message: String, onRetry: () -> Unit, onLogout: () -> Unit) {
     val c = LocalPulso.current
     Column(Modifier.fillMaxSize().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-        Text("pulso", style = Type.serif(34.sp, italic = true), color = c.ink)
+        Text("messoff", style = Type.serif(34.sp, italic = true), color = c.ink)
         Spacer(Modifier.height(10.dp))
         Text("No hemos podido cargar tu agenda.", style = Type.body, color = c.ink2)
         Spacer(Modifier.height(6.dp))

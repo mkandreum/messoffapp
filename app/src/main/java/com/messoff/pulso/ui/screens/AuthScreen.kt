@@ -91,7 +91,7 @@ fun AuthScreen(vm: AppViewModel, notice: String?) {
 
     fun submit() {
         error = when {
-            server.isBlank() -> "Escribe la dirección de tu servidor Pulso."
+            server.isBlank() -> "Escribe la dirección de tu servidor MessOff."
             register && name.isBlank() -> "Escribe tu nombre."
             !email.contains('@') -> "El email no es válido."
             register && password.length < 8 -> "La contraseña debe tener al menos 8 caracteres."
@@ -134,7 +134,7 @@ fun AuthScreen(vm: AppViewModel, notice: String?) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             LogoMark(44.dp)
             Spacer(Modifier.width(12.dp))
-            Text("pulso", style = Type.serif(34.sp, italic = true), color = c.ink)
+            Text("messoff", style = Type.serif(34.sp, italic = true), color = c.ink)
         }
         Spacer(Modifier.height(22.dp))
         Eyebrow("Agenda personal · edición papel")
@@ -142,7 +142,7 @@ fun AuthScreen(vm: AppViewModel, notice: String?) {
         Text(
             buildAnnotatedString {
                 append("Tu semana,\n")
-                withStyle(SpanStyle(color = c.accent, fontStyle = FontStyle.Italic, fontFamily = PulsoFonts.Serif)) { append("con pulso.") }
+                withStyle(SpanStyle(color = c.accent, fontStyle = FontStyle.Italic, fontFamily = PulsoFonts.Serif)) { append("sin desorden.") }
             },
             style = Type.serif(52.sp, lineHeight = 52.sp), color = c.ink, textAlign = TextAlign.Center,
         )
@@ -203,7 +203,7 @@ fun AuthScreen(vm: AppViewModel, notice: String?) {
             }
 
             AnimatedVisibility(showServer, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
-                Field("Servidor", server, { server = it }, LucideData.Server, "pulso.tu-dominio.com", KeyboardType.Uri)
+                Field("Servidor", server, { server = it }, LucideData.Server, "messoff.tu-dominio.com", KeyboardType.Uri)
             }
             AnimatedVisibility(register, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
                 Field("Tu nombre", name, { name = it }, LucideData.User, "Daniel", KeyboardType.Text)
@@ -251,7 +251,7 @@ fun AuthScreen(vm: AppViewModel, notice: String?) {
                 LucideIcon(LucideData.Server, c.ink3, 16.dp)
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    if (showServer) "Tu servidor Pulso (el de tu Coolify)" else server.removePrefix("https://").removePrefix("http://"),
+                    if (showServer) "Tu servidor MessOff (el de tu Coolify)" else server.removePrefix("https://").removePrefix("http://"),
                     style = Type.sans(13.sp), color = c.ink3,
                     modifier = Modifier.press { showServer = !showServer },
                 )
@@ -263,7 +263,7 @@ fun AuthScreen(vm: AppViewModel, notice: String?) {
             )
         }
         Spacer(Modifier.height(20.dp))
-        Text("Pulso · papel, tinta y un poco de bermellón.", style = Type.serif(17.sp, italic = true), color = c.ink3)
+        Text("MessOff · papel, tinta y un poco de bermellón.", style = Type.serif(17.sp, italic = true), color = c.ink3)
         Spacer(Modifier.height(36.dp))
     }
 }

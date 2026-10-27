@@ -692,7 +692,7 @@ fun SettingsSheet(vm: AppViewModel, open: Boolean, onClose: () -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                if (vm.haptics.supported) "Pulso usa el motor háptico del móvil: clics nítidos, golpes secos y un latido al empezar el foco." else "Este dispositivo no tiene motor de vibración.",
+                if (vm.haptics.supported) "MessOff usa el motor háptico del móvil: clics nítidos, golpes secos y un latido al empezar el foco." else "Este dispositivo no tiene motor de vibración.",
                 style = Type.sans(13.sp), color = c.ink3,
             )
 

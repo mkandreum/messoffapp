@@ -1,6 +1,6 @@
-# Pulso para Android
+# MessOff para Android
 
-App **nativa** de [Pulso / MessOff](https://github.com/mkandreum/MessOff) en Kotlin + Jetpack Compose. Copia el diseño de la web: papel cálido, tinta, Instrument Serif/Sans, un único bermellón y los mismos iconos Lucide. Usa la misma API y la misma cuenta.
+App **nativa** de [MessOff](https://github.com/mkandreum/MessOff) en Kotlin + Jetpack Compose. Copia el diseño de la web: papel cálido, tinta, Instrument Serif/Sans, un único bermellón y los mismos iconos Lucide. Usa la misma API y la misma cuenta.
 
 ## Qué incluye
 
@@ -16,7 +16,7 @@ App **nativa** de [Pulso / MessOff](https://github.com/mkandreum/MessOff) en Kot
 
 ## Hápticas
 
-En Android 11 o superior, si el motor de vibración lo permite, Pulso usa `VibrationEffect.Composition` con primitivas: clic, tic, golpe seco y subida. En móviles más antiguos usa formas de onda con amplitud.
+En Android 11 o superior, si el motor de vibración lo permite, MessOff usa `VibrationEffect.Composition` con primitivas: clic, tic, golpe seco y subida. En móviles más antiguos usa formas de onda con amplitud.
 
 | Gesto | Sensación |
 | --- | --- |
@@ -42,7 +42,7 @@ El APK queda en `app/build/outputs/apk/release/app-release.apk`. Si no defines u
 Para dejar fijado el servidor por defecto:
 
 ```bash
-./gradlew assembleRelease -PapiBase=https://pulso.tu-dominio.com
+./gradlew assembleRelease -PapiBase=https://messoff.tu-dominio.com
 ```
 
 ## Cómo se conecta

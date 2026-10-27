@@ -9,7 +9,7 @@ android {
     compileSdk = 37
 
     defaultConfig {
-        applicationId = "com.messoff.pulso"
+        applicationId = "com.messoff.app"
         minSdk = 26
         targetSdk = 36
         versionCode = (System.getenv("VERSION_CODE") ?: "1").toInt()
@@ -26,7 +26,7 @@ android {
             if (path != null) {
                 storeFile = file(path)
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("KEY_ALIAS") ?: "pulso"
+                keyAlias = System.getenv("KEY_ALIAS") ?: "messoff"
                 keyPassword = System.getenv("KEY_PASSWORD")
             }
         }

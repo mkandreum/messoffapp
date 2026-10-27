@@ -180,7 +180,13 @@ fun PulsoTheme(night: Boolean, content: @Composable () -> Unit) {
     } else {
         lightColorScheme(primary = colors.accent, background = colors.paper, surface = colors.paper2, onSurface = colors.ink)
     }
-    androidx.compose.runtime.CompositionLocalProvider(LocalPulso provides colors) {
+    // El diseño está medido para letra normal: con la letra del sistema muy grande se descuadra.
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val capped = androidx.compose.ui.unit.Density(density.density, minOf(density.fontScale, 1.1f))
+    androidx.compose.runtime.CompositionLocalProvider(
+        LocalPulso provides colors,
+        androidx.compose.ui.platform.LocalDensity provides capped,
+    ) {
         MaterialTheme(colorScheme = scheme, content = content)
     }
 }

@@ -1,7 +1,10 @@
 package com.messoff.pulso.ui.screens
 
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.snap
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -166,16 +169,19 @@ fun CalendarScreen(
             Box(Modifier.size(48.dp).press(scaleTo = 0.85f) { shift(-1) }, contentAlignment = Alignment.Center) {
                 LucideIcon(LucideData.ChevronLeft, c.ink, 22.dp, 1.9f)
             }
-            Column(Modifier.weight(1f).press(scaleTo = 0.97f) { goToday() }, horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(
+                Modifier.weight(1f).clipToBounds().press(scaleTo = 0.97f) { goToday() },
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 AnimatedContent(
                     label,
                     transitionSpec = {
-                        (slideInHorizontally(spring(0.8f, 600f)) { direction * it / 4 } + fadeIn()) togetherWith
-                            (slideOutHorizontally { -direction * it / 4 } + fadeOut(tween(100)))
+                        (slideInHorizontally(spring(0.8f, 600f)) { direction * it / 5 } + fadeIn(tween(160))) togetherWith
+                            fadeOut(tween(90)) using SizeTransform(clip = true) { _, _ -> snap() }
                     },
                     label = "dateLabel",
-                ) { text -> Text(text, style = Type.sans(18.sp, FontWeight.SemiBold), color = c.ink, maxLines = 1) }
-                Text(sub, style = Type.sans(11.5.sp, FontWeight.Medium, 0.1.sp), color = c.ink3)
+                ) { text -> Text(text, style = Type.sans(18.sp, FontWeight.SemiBold), color = c.ink, maxLines = 1, softWrap = false) }
+                Text(sub, style = Type.sans(11.5.sp, FontWeight.Medium, 0.1.sp), color = c.ink3, maxLines = 1, softWrap = false)
             }
             Box(Modifier.size(48.dp).press(scaleTo = 0.85f) { shift(1) }, contentAlignment = Alignment.Center) {
                 LucideIcon(LucideData.ChevronRight, c.ink, 22.dp, 1.9f)
@@ -188,7 +194,7 @@ fun CalendarScreen(
             BoxWithConstraints(
                 Modifier.weight(1f).height(48.dp).clip(RoundedCornerShape(999.dp)).background(c.paper3).border(1.dp, c.line, RoundedCornerShape(999.dp)).padding(4.dp),
             ) {
-                val w = maxWidth / 3
+                val w = maxWidth / CalView.entries.size
                 val x by animateDpAsState(w * view.ordinal, spring(0.72f, Spring.StiffnessMediumLow), label = "seg")
                 Box(Modifier.offset(x = x).width(w).fillMaxHeight().clip(RoundedCornerShape(999.dp)).background(c.ink))
                 Row(Modifier.fillMaxSize()) {

@@ -81,6 +81,7 @@ fun TodayScreen(
     onGoWeek: () -> Unit,
     onGoTasks: () -> Unit,
     onGoFocus: () -> Unit,
+    onTeams: () -> Unit = {},
 ) {
     val c = LocalPulso.current
     val events by vm.events.collectAsState()
@@ -127,6 +128,7 @@ fun TodayScreen(
                 onSearch = onSearch, onSettings = onSettings,
             )
         }
+        item { InvitationBanner(vm, onTeams) }
         item { NextUpNote(vm, onOpen) }
 
         item {

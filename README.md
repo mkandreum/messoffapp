@@ -11,6 +11,8 @@ App **nativa** de [MessOff](https://github.com/mkandreum/MessOff) en Kotlin + Je
 - **Nuevo evento** en lenguaje natural ("Café con Lucía mañana 09:30"), con el mismo analizador que la web.
 - **Tareas**: desliza a la derecha para completar y a la izquierda para eliminar. Toca una tarea para editar su título, fecha y etiqueta. El botón de programar busca el primer hueco libre.
 - **Enfoque**: temporizador de 25, 50 o 90 minutos con un anillo animado. Sigue corriendo en segundo plano y, al terminar, avisa con una notificación y una vibración de logro. Mientras corre, una píldora flotante lo muestra en las demás pantallas.
+- **Equipos**: crea equipos, invita por email (con o sin cuenta) o comparte un enlace/código; los eventos de equipo los ven y editan todos. Chips para mostrar u ocultar cada calendario y selector de calendario al crear o editar eventos.
+- **Vistas del calendario**: Día, Semana, **Agenda** (por defecto: lista por días con «ahora», días pasados plegados), y Mes. Se recuerda la elección.
 - **Búsqueda** de eventos, tareas, secciones y acciones.
 - **Cuenta**: nombre, tema papel o noche, vibración (con patrones de prueba), contraseña, cerrar sesión en todos los dispositivos y eliminar la cuenta.
 

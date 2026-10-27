@@ -80,6 +80,7 @@ import com.messoff.pulso.ui.screens.QuickAddSheet
 import com.messoff.pulso.ui.screens.SearchSheet
 import com.messoff.pulso.ui.screens.SettingsSheet
 import com.messoff.pulso.ui.screens.TasksScreen
+import com.messoff.pulso.ui.screens.TeamsSheet
 import com.messoff.pulso.ui.screens.TodayScreen
 import com.messoff.pulso.ui.theme.LocalPulso
 import com.messoff.pulso.ui.theme.PulsoTheme
@@ -136,6 +137,7 @@ private fun Shell(vm: AppViewModel) {
     var quickOpen by remember { mutableStateOf(false) }
     var searchOpen by remember { mutableStateOf(false) }
     var settingsOpen by remember { mutableStateOf(false) }
+    var teamsOpen by remember { mutableStateOf(false) }
     val loading by vm.loading.collectAsState()
     val error by vm.loadError.collectAsState()
     val focus by vm.focus.collectAsState()
@@ -145,7 +147,7 @@ private fun Shell(vm: AppViewModel) {
         if (Build.VERSION.SDK_INT >= 33) notifications.launch(Manifest.permission.POST_NOTIFICATIONS)
     }
 
-    BackHandler(enabled = tab != Tab.Calendario && selected == null && !quickOpen && !searchOpen && !settingsOpen) {
+    BackHandler(enabled = tab != Tab.Calendario && selected == null && !quickOpen && !searchOpen && !settingsOpen && !teamsOpen) {
         tab = Tab.Calendario
     }
 
@@ -181,9 +183,10 @@ private fun Shell(vm: AppViewModel) {
             ) { current ->
                 when (current) {
                     Tab.Hoy -> TodayScreen(vm, openEvent, onSearch = { searchOpen = true }, onSettings = { settingsOpen = true },
-                        onGoWeek = { navigate(Tab.Calendario) }, onGoTasks = { navigate(Tab.Tareas) }, onGoFocus = { navigate(Tab.Enfoque) })
+                        onGoWeek = { navigate(Tab.Calendario) }, onGoTasks = { navigate(Tab.Tareas) }, onGoFocus = { navigate(Tab.Enfoque) },
+                        onTeams = { teamsOpen = true })
                     Tab.Calendario -> CalendarScreen(vm, openEvent, onSlot = { d, s -> openQuick(QuickPreset(d, s)) },
-                        onSearch = { searchOpen = true }, onSettings = { settingsOpen = true })
+                        onSearch = { searchOpen = true }, onSettings = { settingsOpen = true }, onTeams = { teamsOpen = true })
                     Tab.Tareas -> TasksScreen(vm, onSearch = { searchOpen = true }, onSettings = { settingsOpen = true })
                     Tab.Enfoque -> FocusScreen(vm, openEvent, onSearch = { searchOpen = true }, onSettings = { settingsOpen = true })
                 }
@@ -212,8 +215,10 @@ private fun Shell(vm: AppViewModel) {
             vm, open = searchOpen, onClose = { searchOpen = false },
             onNavigate = navigate, onOpenEvent = openEvent,
             onNewEvent = { openQuick(null) },
+            onTeams = { teamsOpen = true },
         )
-        SettingsSheet(vm, open = settingsOpen, onClose = { settingsOpen = false })
+        SettingsSheet(vm, open = settingsOpen, onClose = { settingsOpen = false }, onTeams = { teamsOpen = true })
+        TeamsSheet(vm, open = teamsOpen, onClose = { teamsOpen = false })
     }
 }
 

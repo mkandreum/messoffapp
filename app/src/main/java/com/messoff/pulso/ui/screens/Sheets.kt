@@ -89,7 +89,7 @@ import java.time.LocalDateTime
 
 /** Hoja inferior con el aspecto de Pulso: papel, borde fino y asa. */
 @Composable
-private fun PulsoSheet(onClose: () -> Unit, accent: Color? = null, content: @Composable ColumnScope.() -> Unit) {
+internal fun PulsoSheet(onClose: () -> Unit, accent: Color? = null, content: @Composable ColumnScope.() -> Unit) {
     val c = LocalPulso.current
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(
@@ -110,7 +110,7 @@ private fun PulsoSheet(onClose: () -> Unit, accent: Color? = null, content: @Com
 }
 
 @Composable
-private fun InlineField(
+internal fun InlineField(
     value: String,
     onChange: (String) -> Unit,
     placeholder: String,
@@ -156,6 +156,9 @@ fun EventSheet(vm: AppViewModel, selectedId: String?, onClose: () -> Unit, onSel
     val date = Dates.parse(draft.date)
     val conflict = events.firstOrNull { it.id != draft.id && it.date == draft.date && draft.start < it.end && draft.end > it.start }
     val checked = draft.checklist.count { it.done }
+    val teams by vm.teams.collectAsState()
+    val auth by vm.auth.collectAsState()
+    val myId = (auth as? AuthState.SignedIn)?.user?.id
 
     PulsoSheet(onClose, accent = c.cat(draft.cat)) {
         Column(
@@ -238,6 +241,18 @@ fun EventSheet(vm: AppViewModel, selectedId: String?, onClose: () -> Unit, onSel
                     PulsoChip("Al día siguiente", false, { vm.repeatEvent(draft, listOf(1), "mañana también") })
                     PulsoChip("Resto de la semana", false, { vm.repeatEvent(draft, rest, "el resto de la semana") }, enabled = rest.isNotEmpty())
                     PulsoChip("4 semanas", false, { vm.repeatEvent(draft, listOf(7, 14, 21, 28), "4 semanas más") })
+                }
+            }
+            if (teams.isNotEmpty()) {
+                val mine = draft.authorId == null || draft.authorId == myId
+                Section("Calendario") {
+                    CalendarPicker(vm, draft.teamId, { patch(draft.copy(teamId = it)) }, enabled = mine)
+                    if (draft.teamId != null && draft.authorName != null) {
+                        Text(
+                            "Creado por ${if (mine) "ti" else draft.authorName}. Todo el equipo puede editarlo.",
+                            style = Type.sans(13.sp), color = c.ink3, modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
                 }
             }
             Section("Categoría") {
@@ -400,6 +415,8 @@ fun QuickAddSheet(vm: AppViewModel, open: Boolean, preset: QuickPreset?, onClose
     var text by remember { mutableStateOf("") }
     var manual by remember { mutableStateOf<Category?>(null) }
     var duration by remember { mutableStateOf(60) }
+    val teams by vm.teams.collectAsState()
+    var teamId by remember { mutableStateOf(vm.lastCalendar?.takeIf { id -> vm.teams.value.any { it.id == id } }) }
     val focus = remember { FocusRequester() }
     val parsed = QuickParse.parse(text, LocalDateTime.now(), preset?.date, preset?.start)
     val category = manual ?: parsed.category ?: Category.Trabajo
@@ -411,9 +428,10 @@ fun QuickAddSheet(vm: AppViewModel, open: Boolean, preset: QuickPreset?, onClose
         val event = vm.addEvent(
             CalEvent(
                 id = "", title = parsed.title, date = Dates.iso(parsed.date), start = parsed.start,
-                duration = duration, category = category.key,
+                duration = duration, category = category.key, teamId = teamId,
             ),
         )
+        vm.rememberCalendar(teamId)
         vm.haptics.play(Haptic.Success)
         onClose()
         vm.notify("«${parsed.title}» · ${Dates.time(parsed.start)}", "Abrir") { onCreated(event.id) }
@@ -472,6 +490,7 @@ fun QuickAddSheet(vm: AppViewModel, open: Boolean, preset: QuickPreset?, onClose
                     DURATIONS.forEach { m -> PulsoChip(Dates.chip(m), duration == m, { duration = m }, haptics = vm.haptics) }
                 }
             }
+            if (teams.isNotEmpty()) Section("Calendario") { CalendarPicker(vm, teamId, { teamId = it }) }
             Section("Categoría") { TagPicker(vm, category) { manual = it } }
             Spacer(Modifier.height(20.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -495,6 +514,7 @@ fun SearchSheet(
     onNavigate: (Tab) -> Unit,
     onOpenEvent: (String) -> Unit,
     onNewEvent: () -> Unit,
+    onTeams: () -> Unit,
 ) {
     if (!open) return
     val c = LocalPulso.current
@@ -518,6 +538,7 @@ fun SearchSheet(
         add(Hit("Navegar", "Ir a la bandeja", null, LucideData.ListChecks, null) { onNavigate(Tab.Tareas) })
         add(Hit("Navegar", "Ir a Enfoque", null, LucideData.Timer, null) { onNavigate(Tab.Enfoque) })
         add(Hit("Acciones", "Crear evento", null, LucideData.Plus, null, onNewEvent))
+        add(Hit("Acciones", "Equipos y calendarios compartidos", null, LucideData.Users, null, onTeams))
         add(Hit("Acciones", if (night) "Cambiar a modo papel" else "Cambiar a modo noche", null, if (night) LucideData.Sun else LucideData.Moon, null) {
             vm.setTheme(if (night) "paper" else "night")
         })
@@ -572,7 +593,7 @@ fun SearchSheet(
 // ======================= Cuenta y ajustes =======================
 
 @Composable
-fun SettingsSheet(vm: AppViewModel, open: Boolean, onClose: () -> Unit) {
+fun SettingsSheet(vm: AppViewModel, open: Boolean, onClose: () -> Unit, onTeams: () -> Unit = {}) {
     if (!open) return
     val c = LocalPulso.current
     val scope = rememberCoroutineScope()
@@ -626,6 +647,24 @@ fun SettingsSheet(vm: AppViewModel, open: Boolean, onClose: () -> Unit) {
             }
             Spacer(Modifier.height(18.dp))
             Divider()
+
+            Row(
+                Modifier.fillMaxWidth().padding(top = 18.dp).clip(RoundedCornerShape(16.dp)).background(c.paper)
+                    .border(1.dp, c.line, RoundedCornerShape(16.dp))
+                    .press(scaleTo = 0.985f, haptics = vm.haptics) {
+                        onClose()
+                        onTeams()
+                    }.padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                LucideIcon(LucideData.Users, c.ink, 22.dp)
+                Spacer(Modifier.width(14.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("Equipos", style = Type.sans(16.sp, FontWeight.SemiBold), color = c.ink)
+                    Text("Comparte un calendario con quien quieras", style = Type.sans(13.sp), color = c.ink3)
+                }
+                LucideIcon(LucideData.ChevronRight, c.ink3, 18.dp)
+            }
 
             Section("Perfil") {
                 Row(verticalAlignment = Alignment.CenterVertically) {

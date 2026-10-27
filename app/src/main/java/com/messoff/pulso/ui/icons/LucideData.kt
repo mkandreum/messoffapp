@@ -211,4 +211,32 @@ object LucideData {
         "m12 19-7-7 7-7",
         "M19 12H5",
     )
+    val Link2: List<String> = listOf(
+        "M9 17H7A5 5 0 0 1 7 7h2",
+        "M15 7h2a5 5 0 1 1 0 10h-2",
+        "M8 12L16 12",
+    )
+    val RefreshCw: List<String> = listOf(
+        "M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8",
+        "M21 3v5h-5",
+        "M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16",
+        "M8 16H3v5",
+    )
+    val UserPlus: List<String> = listOf(
+        "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2",
+        "M5 7a4 4 0 1 0 8 0a4 4 0 1 0 -8 0",
+        "M19 8L19 14",
+        "M22 11L16 11",
+    )
+    val ChevronDown: List<String> = listOf(
+        "m6 9 6 6 6-6",
+    )
+    val LayoutList: List<String> = listOf(
+        "M4 3h5a1 1 0 0 1 1 1v5a1 1 0 0 1 -1 1h-5a1 1 0 0 1 -1 -1v-5a1 1 0 0 1 1 -1Z",
+        "M4 14h5a1 1 0 0 1 1 1v5a1 1 0 0 1 -1 1h-5a1 1 0 0 1 -1 -1v-5a1 1 0 0 1 1 -1Z",
+        "M14 4h7",
+        "M14 9h7",
+        "M14 15h7",
+        "M14 20h7",
+    )
 }

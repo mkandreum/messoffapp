@@ -10,11 +10,15 @@ import com.messoff.pulso.data.Category
 import com.messoff.pulso.data.ChecklistItem
 import com.messoff.pulso.data.EventResponse
 import com.messoff.pulso.data.FocusSession
+import com.messoff.pulso.data.Invitation
+import com.messoff.pulso.data.Team
+import com.messoff.pulso.data.TeamsResponse
 import com.messoff.pulso.data.ScheduleResponse
 import com.messoff.pulso.data.SessionResponse
 import com.messoff.pulso.data.SessionsResponse
 import com.messoff.pulso.data.Task
 import com.messoff.pulso.data.TaskResponse
+import com.messoff.pulso.data.TeamRef
 import com.messoff.pulso.data.User
 import com.messoff.pulso.data.UserResponse
 import com.messoff.pulso.focus.FocusAlarm
@@ -23,6 +27,9 @@ import com.messoff.pulso.util.Dates
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -65,7 +72,20 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val auth: StateFlow<AuthState> = _auth.asStateFlow()
 
     private val _events = MutableStateFlow<List<CalEvent>>(emptyList())
-    val events: StateFlow<List<CalEvent>> = _events.asStateFlow()
+
+    private val _hidden = MutableStateFlow(session.hiddenCalendars)
+    val hiddenCalendars: StateFlow<Set<String>> = _hidden.asStateFlow()
+
+    /** Solo los eventos de los calendarios visibles. */
+    val events: StateFlow<List<CalEvent>> = combine(_events, _hidden) { list, hidden ->
+        if (hidden.isEmpty()) list else list.filterNot { (it.teamId ?: "me") in hidden }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    private val _teams = MutableStateFlow<List<Team>>(emptyList())
+    val teams: StateFlow<List<Team>> = _teams.asStateFlow()
+
+    private val _invitations = MutableStateFlow<List<Invitation>>(emptyList())
+    val invitations: StateFlow<List<Invitation>> = _invitations.asStateFlow()
 
     private val _tasks = MutableStateFlow<List<Task>>(emptyList())
     val tasks: StateFlow<List<Task>> = _tasks.asStateFlow()
@@ -102,6 +122,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             while (true) {
                 _now.value = LocalDateTime.now()
                 delay(60_000L - System.currentTimeMillis() % 60_000L)
+            }
+        }
+        // Con equipos, los cambios de otras personas llegan solos cada medio minuto.
+        viewModelScope.launch {
+            while (true) {
+                delay(30_000)
+                if (_auth.value is AuthState.SignedIn && _teams.value.isNotEmpty()) syncNow()
             }
         }
         boot()
@@ -267,6 +294,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 val data = api.get<BootstrapResponse>("/bootstrap")
                 _events.value = data.events
                 _tasks.value = data.tasks
+                _teams.value = data.teams
+                _invitations.value = data.invitations
                 applyUser(data.user)
                 _auth.value = AuthState.SignedIn(data.user)
                 lastSync = System.currentTimeMillis()
@@ -284,15 +313,105 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (_auth.value !is AuthState.SignedIn) return
         if (System.currentTimeMillis() - lastSync < 20_000) return
         if (inflight.get() > 0 || saveJobs.isNotEmpty()) return
-        viewModelScope.launch {
-            runCatching { api.get<BootstrapResponse>("/bootstrap") }.onSuccess { data ->
-                if (inflight.get() == 0 && saveJobs.isEmpty()) {
-                    _events.value = data.events
-                    _tasks.value = data.tasks
-                    lastSync = System.currentTimeMillis()
-                }
+        viewModelScope.launch { syncNow() }
+    }
+
+    /** Trae los datos del servidor sin pisar cambios en vuelo. */
+    private suspend fun syncNow() {
+        if (inflight.get() > 0 || saveJobs.isNotEmpty()) return
+        runCatching { api.get<BootstrapResponse>("/bootstrap") }.onSuccess { data ->
+            if (inflight.get() == 0 && saveJobs.isEmpty()) {
+                _events.value = data.events
+                _tasks.value = data.tasks
+                _teams.value = data.teams
+                _invitations.value = data.invitations
+                lastSync = System.currentTimeMillis()
             }
         }
+    }
+
+    // ---------- Equipos ----------
+
+    fun toggleCalendar(id: String) {
+        val next = _hidden.value.let { if (id in it) it - id else it + id }
+        _hidden.value = next
+        session.hiddenCalendars = next
+    }
+
+    fun rememberCalendar(teamId: String?) {
+        session.lastCalendar = teamId.orEmpty()
+    }
+
+    val lastCalendar: String? get() = session.lastCalendar.ifBlank { null }
+
+    var calViewName: String
+        get() = session.calView
+        set(value) {
+            session.calView = value
+        }
+
+    private fun applyTeams(data: TeamsResponse) {
+        _teams.value = data.teams
+        _invitations.value = data.invitations
+    }
+
+    private suspend fun teamCall(method: String, path: String, body: kotlinx.serialization.json.JsonElement? = null, failMessage: String = "No se pudo completar la acción"): TeamsResponse? {
+        inflight.incrementAndGet()
+        return try {
+            val data = api.json.decodeFromString<TeamsResponse>(api.raw(method, path, body))
+            applyTeams(data)
+            data
+        } catch (e: Throwable) {
+            fail(e, failMessage)
+            null
+        } finally {
+            inflight.decrementAndGet()
+        }
+    }
+
+    suspend fun createTeam(name: String, color: String): String? =
+        teamCall("POST", "/teams", api.obj("name" to name, "color" to color), "No se pudo crear el equipo")?.team?.id
+
+    suspend fun updateTeam(id: String, name: String? = null, color: String? = null) {
+        val fields = buildList {
+            if (name != null) add("name" to name)
+            if (color != null) add("color" to color)
+        }
+        teamCall("PATCH", "/teams/$id", api.obj(*fields.toTypedArray()))
+    }
+
+    suspend fun deleteTeam(id: String) {
+        if (teamCall("DELETE", "/teams/$id") != null) syncNow()
+    }
+
+    suspend fun regenerateCode(id: String) {
+        teamCall("POST", "/teams/$id/code", api.obj())
+    }
+
+    /** Devuelve si la persona ya tiene cuenta (null si falló). */
+    suspend fun inviteToTeam(id: String, email: String): Boolean? =
+        teamCall("POST", "/teams/$id/invites", api.obj("email" to email), "No se pudo invitar")?.registered
+
+    suspend fun removeInvite(teamId: String, inviteId: String) {
+        teamCall("DELETE", "/teams/$teamId/invites/$inviteId")
+    }
+
+    suspend fun acceptInvitation(id: String) {
+        if (teamCall("POST", "/teams/invitations/$id/accept", api.obj()) != null) syncNow()
+    }
+
+    suspend fun declineInvitation(id: String) {
+        teamCall("POST", "/teams/invitations/$id/decline", api.obj())
+    }
+
+    suspend fun joinTeam(code: String): TeamRef? {
+        val data = teamCall("POST", "/teams/join", api.obj("code" to code), "No se pudo unir al equipo") ?: return null
+        syncNow()
+        return data.team
+    }
+
+    suspend fun leaveTeam(teamId: String, userId: String) {
+        if (teamCall("DELETE", "/teams/$teamId/members/$userId") != null) syncNow()
     }
 
     private fun uid() = UUID.randomUUID().toString()

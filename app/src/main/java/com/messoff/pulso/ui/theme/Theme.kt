@@ -157,6 +157,21 @@ object Type {
     val pageTitle = serif(44.sp, lineHeight = 46.sp)
 }
 
+/** Colores de equipo: [papel, noche], calcados de la web. */
+fun teamColor(key: String?, night: Boolean): Color {
+    val pair = when (key) {
+        "rojo" -> 0xFFC9431F to 0xFFFF7A4D
+        "verde" -> 0xFF3F6B52 to 0xFF8DBA99
+        "ocre" -> 0xFF996A12 to 0xFFDCB060
+        "violeta" -> 0xFF6B4F96 to 0xFFB79AE0
+        "grafito" -> 0xFF4A463D to 0xFFC4BCA8
+        else -> 0xFF2F6480 to 0xFF85B8D2
+    }
+    return Color(if (night) pair.second else pair.first)
+}
+
+val TEAM_COLOR_KEYS = listOf("rojo", "verde", "azul", "ocre", "violeta", "grafito")
+
 @Composable
 fun PulsoTheme(night: Boolean, content: @Composable () -> Unit) {
     val colors = if (night) NightColors else PaperColors

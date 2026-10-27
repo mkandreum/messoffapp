@@ -75,6 +75,7 @@ import com.messoff.pulso.ui.icons.LucideData
 import com.messoff.pulso.ui.icons.LucideIcon
 import com.messoff.pulso.ui.theme.LocalPulso
 import com.messoff.pulso.ui.theme.Type
+import com.messoff.pulso.ui.theme.teamColor
 import com.messoff.pulso.util.Dates
 import java.time.LocalDate
 import kotlin.math.roundToInt
@@ -84,7 +85,7 @@ private const val DAY_END = 23 * 60
 private val HOUR_H = 68.dp
 private val GUTTER = 54.dp
 
-enum class CalView(val label: String) { Dia("Día"), Semana("Semana"), Mes("Mes") }
+enum class CalView(val label: String) { Dia("Día"), Semana("Semana"), Agenda("Agenda"), Mes("Mes") }
 
 @Composable
 fun CalendarScreen(
@@ -93,9 +94,12 @@ fun CalendarScreen(
     onSlot: (LocalDate, Int) -> Unit,
     onSearch: () -> Unit,
     onSettings: () -> Unit,
+    onTeams: () -> Unit = {},
 ) {
     val c = LocalPulso.current
-    var view by rememberSaveable { mutableStateOf(CalView.Semana) }
+    var view by rememberSaveable {
+        mutableStateOf(CalView.entries.firstOrNull { it.name.lowercase() == vm.calViewName } ?: CalView.Agenda)
+    }
     var anchorEpoch by rememberSaveable { mutableStateOf(LocalDate.now().toEpochDay()) }
     var direction by remember { mutableStateOf(1) }
     val anchor = LocalDate.ofEpochDay(anchorEpoch)
@@ -106,7 +110,7 @@ fun CalendarScreen(
         anchorEpoch = when (view) {
             CalView.Mes -> anchor.withDayOfMonth(1).plusMonths(step.toLong()).toEpochDay()
             CalView.Dia -> anchor.plusDays(step.toLong()).toEpochDay()
-            CalView.Semana -> anchor.plusWeeks(step.toLong()).toEpochDay()
+            CalView.Semana, CalView.Agenda -> anchor.plusWeeks(step.toLong()).toEpochDay()
         }
     }
     fun goToday() {
@@ -124,30 +128,32 @@ fun CalendarScreen(
     val label = when (view) {
         CalView.Mes -> Dates.month(anchor).replaceFirstChar { it.uppercase() }
         CalView.Dia -> Dates.dateMedium(anchor)
-        CalView.Semana -> Dates.weekRange(monday)
+        CalView.Semana, CalView.Agenda -> Dates.weekRange(monday)
     }
     val sub = if (view == CalView.Mes) "VISTA MENSUAL" else "SEMANA ${Dates.weekNumber(anchor)} · ${anchor.year}"
     val eyebrow = when (view) {
         CalView.Mes -> Dates.month(anchor)
         CalView.Dia -> Dates.dateLong(anchor)
-        CalView.Semana -> "Semana ${Dates.weekNumber(anchor)} · ${Dates.MONTHS[anchor.monthValue - 1]}"
+        CalView.Semana, CalView.Agenda -> "Semana ${Dates.weekNumber(anchor)} · ${Dates.MONTHS[anchor.monthValue - 1]}"
     }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         AppHeader(
-            vm, eyebrow, "Tu", when (view) { CalView.Dia -> "día"; CalView.Semana -> "semana"; CalView.Mes -> "mes" },
+            vm, eyebrow, "Tu", when (view) { CalView.Dia -> "día"; CalView.Semana -> "semana"; CalView.Agenda -> "agenda"; CalView.Mes -> "mes" },
             subtitle = {
                 Text(
                     when (view) {
                         CalView.Mes -> "Toca un día para abrirlo. Desliza para cambiar de mes."
                         CalView.Dia -> "Todo lo del día, con espacio. Toca un hueco para crear."
                         CalView.Semana -> "Mantén pulsado para mover. Toca un hueco para crear."
+                        CalView.Agenda -> "Lo que viene, día a día. Toca un evento para abrirlo."
                     },
                     style = Type.body, color = c.ink2,
                 )
             },
             onSearch = onSearch, onSettings = onSettings,
         )
+        InvitationBanner(vm, onTeams)
         NextUpNote(vm, onOpen)
         Spacer(Modifier.height(16.dp))
 
@@ -192,11 +198,12 @@ fun CalendarScreen(
                                 if (view != option) {
                                     vm.haptics.play(Haptic.Selection)
                                     view = option
+                                    vm.calViewName = option.name.lowercase()
                                 }
                             },
                             contentAlignment = Alignment.Center,
                         ) {
-                            Text(option.label, style = Type.sans(15.sp, FontWeight.Medium), color = if (view == option) c.onInk else c.ink2)
+                            Text(option.label, style = Type.sans(14.sp, FontWeight.Medium), color = if (view == option) c.onInk else c.ink2)
                         }
                     }
                 }
@@ -208,12 +215,14 @@ fun CalendarScreen(
                 contentAlignment = Alignment.Center,
             ) { Text("Hoy", style = Type.sans(15.sp, FontWeight.Medium), color = c.ink) }
         }
-        Spacer(Modifier.height(14.dp))
+        Spacer(Modifier.height(10.dp))
+        CalendarChips(vm, onTeams)
+        Spacer(Modifier.height(10.dp))
 
         var swipe by remember { mutableFloatStateOf(0f) }
         AnimatedContent(
-            targetState = Triple(view, anchorEpoch, if (view == CalView.Semana) monday.toEpochDay() else anchorEpoch),
-            contentKey = { (v, a, m) -> "$v-${if (v == CalView.Semana) m else if (v == CalView.Mes) LocalDate.ofEpochDay(a).withDayOfMonth(1).toEpochDay() else a}" },
+            targetState = Triple(view, anchorEpoch, if (view == CalView.Semana || view == CalView.Agenda) monday.toEpochDay() else anchorEpoch),
+            contentKey = { (v, a, m) -> "$v-${if (v == CalView.Semana || v == CalView.Agenda) m else if (v == CalView.Mes) LocalDate.ofEpochDay(a).withDayOfMonth(1).toEpochDay() else a}" },
             transitionSpec = {
                 (slideInHorizontally(spring(0.85f, 380f)) { direction * it / 8 } + fadeIn(tween(220))) togetherWith
                     (slideOutHorizontally(tween(180)) { -direction * it / 8 } + fadeOut(tween(140)))
@@ -232,6 +241,7 @@ fun CalendarScreen(
                 CalView.Mes -> MonthGrid(vm, day, onOpen, ::pickDay)
                 CalView.Dia -> WeekGrid(vm, listOf(day), onOpen, onSlot, ::pickDay)
                 CalView.Semana -> WeekGrid(vm, Dates.weekDays(day), onOpen, onSlot, ::pickDay)
+                CalView.Agenda -> AgendaList(vm, Dates.weekDays(day), onOpen, onSlot)
             }
         }
         Spacer(Modifier.height(140.dp))
@@ -250,6 +260,7 @@ private fun WeekGrid(
 ) {
     val c = LocalPulso.current
     val events by vm.events.collectAsState()
+    val teams by vm.teams.collectAsState()
     val now by vm.now.collectAsState()
     val today = LocalDate.now()
     val density = LocalDensity.current
@@ -387,6 +398,7 @@ private fun WeekGrid(
                                     EventBlock(
                                         event = event,
                                         stacked = event.id in stacked,
+                                        teamTint = teams.firstOrNull { it.id == event.teamId }?.let { teamColor(it.color, c.night) },
                                         dragging = isDragging,
                                         dx = if (isDragging) dragDx else 0f,
                                         dy = if (isDragging) dragDy else 0f,
@@ -460,6 +472,7 @@ private fun WeekGrid(
 private fun EventBlock(
     event: CalEvent,
     stacked: Boolean,
+    teamTint: Color?,
     dragging: Boolean,
     dx: Float,
     dy: Float,
@@ -510,6 +523,9 @@ private fun EventBlock(
             }
             .padding(start = 11.dp, end = 6.dp, top = if (compact) 4.dp else 7.dp),
     ) {
+        if (teamTint != null) {
+            Box(Modifier.align(Alignment.TopEnd).size(9.dp).clip(CircleShape).background(teamTint))
+        }
         if (compact) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(Dates.time(event.start), style = Type.sans(12.sp, FontWeight.Bold), color = c.ink)

@@ -20,6 +20,19 @@ class Session(context: Context) {
         get() = prefs.getString("theme", "paper") ?: "paper"
         set(value) = prefs.edit().putString("theme", value).apply()
 
+    /** Calendarios ocultos: "me" o el id de un equipo. */
+    var hiddenCalendars: Set<String>
+        get() = prefs.getStringSet("hiddenCalendars", emptySet()) ?: emptySet()
+        set(value) = prefs.edit().putStringSet("hiddenCalendars", value).apply()
+
+    var lastCalendar: String
+        get() = prefs.getString("lastCalendar", "") ?: ""
+        set(value) = prefs.edit().putString("lastCalendar", value).apply()
+
+    var calView: String
+        get() = prefs.getString("calView", "agenda") ?: "agenda"
+        set(value) = prefs.edit().putString("calView", value).apply()
+
     var hapticsEnabled: Boolean
         get() = prefs.getBoolean("haptics", true)
         set(value) = prefs.edit().putBoolean("haptics", value).apply()

@@ -1,0 +1,45 @@
+name: APK release (R8)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Compilar APK release con R8
+        run: ./gradlew :app:assembleRelease --no-daemon
+        env:
+          VERSION_CODE: "5"
+          VERSION_NAME: "1.2.2"
+
+      - name: Comprobar la firma
+        run: |
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/release/app-release.apk
+
+      - name: Publicar el release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          APK="MessOff-${GITHUB_REF_NAME}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$APK"
+          gh release create "$GITHUB_REF_NAME" "$APK" \
+            --title "MessOff ${GITHUB_REF_NAME}" \
+            --notes "Nuevo icono. Compilado en GitHub con R8 en el commit ${GITHUB_SHA::7}."

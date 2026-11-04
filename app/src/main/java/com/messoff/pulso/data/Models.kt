@@ -74,6 +74,8 @@ data class Task(
     val assigneeName: String? = null,
     val authorId: String? = null,
     val authorName: String? = null,
+    /** todo | doing | done */
+    val status: String = if (done) "done" else "todo",
 ) {
     val cat: Category get() = Category.of(tag)
 }

@@ -840,6 +840,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             due = if (clearDue) null else due ?: previous.due,
             tag = tag?.key ?: previous.tag,
             done = done ?: previous.done,
+            status = when (done) {
+                null -> previous.status
+                true -> "done"
+                false -> if (previous.status == "done") "todo" else previous.status
+            },
         )
         _tasks.update { list -> list.map { if (it.id == id) next else it } }
         val body = buildList {
@@ -851,6 +856,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         send("PATCH", "/tasks/$id", api.obj(*body.toTypedArray())) { e ->
             _tasks.update { list -> list.map { if (it.id == id) previous else it } }
             fail(e, "No se pudo actualizar la tarea")
+        }
+    }
+
+    /** Mueve la tarea a otra columna del tablero. */
+    fun setTaskStatus(id: String, status: String) {
+        val previous = _tasks.value.firstOrNull { it.id == id } ?: return
+        if (previous.status == status) return
+        val next = previous.copy(status = status, done = status == "done")
+        _tasks.update { list -> list.map { if (it.id == id) next else it } }
+        send("PATCH", "/tasks/$id", api.obj("status" to status)) { e ->
+            _tasks.update { list -> list.map { if (it.id == id) previous else it } }
+            fail(e, "No se pudo mover la tarea")
         }
     }
 

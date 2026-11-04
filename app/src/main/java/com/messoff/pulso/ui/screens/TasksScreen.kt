@@ -1,5 +1,6 @@
 package com.messoff.pulso.ui.screens
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
@@ -14,6 +15,7 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -96,6 +98,7 @@ fun TasksScreen(vm: AppViewModel, onSearch: () -> Unit, onSettings: () -> Unit) 
     var scope by rememberSaveable { mutableStateOf("todas") }
     var teamId by rememberSaveable { mutableStateOf<String?>(null) }
     var assigneeId by rememberSaveable { mutableStateOf<String?>(null) }
+    var board by rememberSaveable { mutableStateOf(false) }
 
     val today = Dates.iso(Dates.today())
     val tomorrow = Dates.iso(Dates.today().plusDays(1))
@@ -189,14 +192,21 @@ fun TasksScreen(vm: AppViewModel, onSearch: () -> Unit, onSettings: () -> Unit) 
                             ) { Text("Añadir", style = Type.sans(15.sp, FontWeight.SemiBold), color = c.onInk) }
                         }
                     }
+                    Spacer(Modifier.height(14.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        PulsoChip("Lista", !board, { board = false }, haptics = vm.haptics)
+                        PulsoChip("Tablero", board, { board = true }, haptics = vm.haptics)
+                    }
                     if (teams.isNotEmpty()) {
-                        Spacer(Modifier.height(14.dp))
+                        Spacer(Modifier.height(10.dp))
                         Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             (listOf("todas" to "Todas", "mias" to "Para mí", "personales" to "Personales") + teams.map { it.id to it.name }).forEach { (id, name) ->
                                 PulsoChip(name, scope == id, { scope = id }, dashed = scope != id, haptics = vm.haptics)
                             }
                         }
                     }
+                    if (board) TaskBoard(vm, scoped)
+                    if (!board) {
                     Spacer(Modifier.height(14.dp))
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Filter.entries.forEach { f ->
@@ -224,6 +234,7 @@ fun TasksScreen(vm: AppViewModel, onSearch: () -> Unit, onSettings: () -> Unit) 
                                 TaskRow(vm, task, onSchedule = { vm.scheduleTask(task.id) }, swipeable = true, editable = true)
                             }
                         }
+                    }
                     }
                     Spacer(Modifier.height(16.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -280,6 +291,146 @@ fun TagPicker(vm: AppViewModel, selected: Category, onSelect: (Category) -> Unit
                 contentAlignment = Alignment.Center,
             ) {
                 if (active) Box(Modifier.size(8.dp).clip(CircleShape).background(c.paper2))
+            }
+        }
+    }
+}
+
+private val BOARD_COLUMNS = listOf("todo" to "Por hacer", "doing" to "En curso", "done" to "Hecha")
+
+/** Tablero por estado: una columna a la vista; mantén pulsada una tarjeta y arrástrala de lado para moverla. */
+@Composable
+private fun TaskBoard(vm: AppViewModel, tasks: List<Task>) {
+    var column by rememberSaveable { mutableStateOf("todo") }
+    Spacer(Modifier.height(12.dp))
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        BOARD_COLUMNS.forEach { (id, label) ->
+            PulsoChip("$label  ${tasks.count { it.status == id }}", column == id, { column = id }, haptics = vm.haptics)
+        }
+    }
+    Spacer(Modifier.height(10.dp))
+    AnimatedContent(column, label = "boardColumn") { current ->
+        val items = tasks.filter { it.status == current }.sortedBy { it.due ?: "9" }
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (items.isEmpty()) {
+                com.messoff.pulso.ui.components.EmptyState("✓", "Nada en esta columna.", "Mueve aquí una tarjeta cuando toque.")
+            }
+            items.forEach { task ->
+                androidx.compose.runtime.key(task.id) { BoardCard(vm, task) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BoardCard(vm: AppViewModel, task: Task) {
+    val c = LocalPulso.current
+    val density = LocalDensity.current
+    val teams by vm.teams.collectAsState()
+    val auth by vm.auth.collectAsState()
+    val myId = (auth as? AuthState.SignedIn)?.user?.id
+    val team = teams.firstOrNull { it.id == task.teamId }
+    var open by remember { mutableStateOf(false) }
+    var dragX by remember { mutableStateOf(0f) }
+    val shownX by animateFloatAsState(dragX, spring(0.7f, Spring.StiffnessMedium), label = "cardDrag")
+    val index = BOARD_COLUMNS.indexOfFirst { it.first == task.status }
+    val thresholdPx = with(density) { 90.dp.toPx() }
+    val today = Dates.iso(Dates.today())
+    val overdue = task.due != null && !task.done && task.due < today
+
+    fun moveTo(next: Int) {
+        val target = BOARD_COLUMNS.getOrNull(next) ?: return
+        val previous = task.status
+        vm.haptics.play(if (target.first == "done") Haptic.Success else Haptic.Snap)
+        vm.setTaskStatus(task.id, target.first)
+        vm.notify("«${task.title}» · ${target.second}", "Deshacer") { vm.setTaskStatus(task.id, previous) }
+    }
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .offset { IntOffset(shownX.roundToInt(), 0) }
+            .clip(RoundedCornerShape(16.dp))
+            .background(c.paper)
+            .border(1.dp, c.line, RoundedCornerShape(16.dp))
+            .pointerInput(task.id, task.status) {
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { vm.haptics.play(Haptic.Medium) },
+                    onDragEnd = {
+                        val moved = dragX
+                        dragX = 0f
+                        if (moved > thresholdPx) moveTo(index + 1) else if (moved < -thresholdPx) moveTo(index - 1)
+                    },
+                    onDragCancel = { dragX = 0f },
+                ) { change, amount ->
+                    change.consume()
+                    val before = abs(dragX) > thresholdPx
+                    dragX += amount.x
+                    if (before != abs(dragX) > thresholdPx) vm.haptics.tick()
+                }
+            }
+            .press(scaleTo = 0.985f, haptics = vm.haptics) { open = !open }
+            .padding(14.dp),
+    ) {
+        Text(
+            task.title,
+            style = Type.sans(16.sp, FontWeight.Medium).copy(textDecoration = if (task.done) TextDecoration.LineThrough else null),
+            color = if (task.done) c.ink3 else c.ink,
+            maxLines = 3, overflow = TextOverflow.Ellipsis,
+        )
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CategoryDot(task.cat, 7.dp)
+            if (task.due != null) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    Dates.relativeDay(Dates.parse(task.due)),
+                    style = Type.sans(13.sp, if (overdue) FontWeight.SemiBold else FontWeight.Normal),
+                    color = if (overdue) c.accent else c.ink3,
+                )
+            }
+            if (team != null) {
+                Spacer(Modifier.width(8.dp))
+                Box(Modifier.size(7.dp).clip(CircleShape).background(teamColor(team.color, c.night)))
+                Spacer(Modifier.width(5.dp))
+                Text(
+                    "${team.name} · ${if (task.assigneeId == myId) "Yo" else task.assigneeName ?: "Sin asignar"}",
+                    style = Type.sans(13.sp), color = c.ink2, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        AnimatedVisibility(open, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+            Column(Modifier.padding(top = 12.dp)) {
+                if (teams.isNotEmpty()) {
+                    CalendarPicker(vm, task.teamId, { vm.placeTask(task.id, it, null) }, enabled = task.authorId == null || task.authorId == myId)
+                    AssigneePicker(vm, task.teamId, task.assigneeId) { vm.placeTask(task.id, task.teamId, it) }
+                    Spacer(Modifier.height(10.dp))
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (index > 0) {
+                        Box(Modifier.size(40.dp).clip(CircleShape).border(1.dp, c.lineStrong, CircleShape).press(scaleTo = 0.85f) { moveTo(index - 1) }, contentAlignment = Alignment.Center) {
+                            LucideIcon(LucideData.ChevronLeft, c.ink2, 18.dp, 2f)
+                        }
+                    }
+                    if (index < BOARD_COLUMNS.lastIndex) {
+                        Box(Modifier.size(40.dp).clip(CircleShape).border(1.dp, c.lineStrong, CircleShape).press(scaleTo = 0.85f) { moveTo(index + 1) }, contentAlignment = Alignment.Center) {
+                            LucideIcon(LucideData.ChevronRight, c.ink2, 18.dp, 2f)
+                        }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    Row(
+                        Modifier.press {
+                            vm.haptics.play(Haptic.Error)
+                            val removed = vm.deleteTask(task.id)
+                            if (removed != null) vm.notify("«${task.title}» eliminada", "Deshacer") { vm.restoreTask(removed) }
+                        }.padding(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        LucideIcon(LucideData.Trash2, c.accent, 17.dp)
+                        Spacer(Modifier.width(4.dp))
+                        Text("Eliminar", style = Type.sans(14.sp, FontWeight.Medium), color = c.accent)
+                    }
+                }
             }
         }
     }
@@ -432,6 +583,10 @@ fun TaskRow(
                         CategoryDot(task.cat, 7.dp)
                         Spacer(Modifier.width(6.dp))
                         Text(dueLabel, style = Type.sans(13.sp, if (overdue) FontWeight.SemiBold else FontWeight.Normal), color = if (overdue) c.accent else c.ink3)
+                        if (task.status == "doing") {
+                            Spacer(Modifier.width(8.dp))
+                            Text("En curso", style = Type.sans(13.sp, FontWeight.SemiBold), color = c.accent)
+                        }
                         if (team != null) {
                             Spacer(Modifier.width(8.dp))
                             Box(Modifier.size(7.dp).clip(CircleShape).background(teamColor(team.color, c.night)))

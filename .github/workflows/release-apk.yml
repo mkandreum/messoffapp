@@ -24,8 +24,8 @@ jobs:
       - name: Compilar APK release con R8
         run: ./gradlew :app:assembleRelease --no-daemon
         env:
-          VERSION_CODE: "7"
-          VERSION_NAME: "1.3.1"
+          VERSION_CODE: "8"
+          VERSION_NAME: "1.3.2"
 
       - name: Comprobar la firma
         run: |
@@ -42,4 +42,4 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk "$APK"
           gh release create "$GITHUB_REF_NAME" "$APK" \
             --title "MessOff ${GITHUB_REF_NAME}" \
-            --notes "Tareas de equipo: crea tareas en un equipo, asígnalas y filtra por Para mí, personales o cada equipo. Necesita el servidor actualizado. Compilado en GitHub con R8 en el commit ${GITHUB_SHA::7}."
+            --notes "Tablero de tareas: Por hacer, En curso y Hecha. Mantén pulsada una tarjeta y deslízala de lado para moverla. Necesita el servidor actualizado. Compilado en GitHub con R8 en el commit ${GITHUB_SHA::7}."

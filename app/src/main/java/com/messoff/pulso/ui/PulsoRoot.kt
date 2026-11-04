@@ -39,6 +39,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.windowInsetsTopHeight
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -66,6 +68,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import com.messoff.pulso.AppViewModel
 import com.messoff.pulso.AuthState
+import com.messoff.pulso.OpenRequest
+import com.messoff.pulso.SyncState
 import com.messoff.pulso.haptics.Haptic
 import com.messoff.pulso.ui.components.LogoMark
 import com.messoff.pulso.ui.components.press
@@ -141,6 +145,8 @@ private fun Shell(vm: AppViewModel) {
     val loading by vm.loading.collectAsState()
     val error by vm.loadError.collectAsState()
     val focus by vm.focus.collectAsState()
+    val sync by vm.sync.collectAsState()
+    val openRequest by vm.openRequest.collectAsState()
 
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     LaunchedEffect(Unit) {
@@ -165,6 +171,19 @@ private fun Shell(vm: AppViewModel) {
             vm.haptics.play(Haptic.Selection)
             tab = it
         }
+    }
+
+    // Lo que piden una notificación o el widget.
+    LaunchedEffect(openRequest) {
+        when (val request = openRequest) {
+            is OpenRequest.Event -> {
+                tab = Tab.Calendario
+                selected = request.id
+            }
+            OpenRequest.NewEvent -> openQuick(null)
+            null -> return@LaunchedEffect
+        }
+        vm.consumeOpenRequest()
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -202,6 +221,18 @@ private fun Shell(vm: AppViewModel) {
             FocusPill(vm) { navigate(Tab.Enfoque) }
         }
 
+        // El contenido nunca se ve por debajo de la barra de estado.
+        Box(Modifier.fillMaxWidth().windowInsetsTopHeight(WindowInsets.statusBars).background(c.paper))
+
+        AnimatedVisibility(
+            visible = sync.offline || sync.pending > 0,
+            enter = fadeIn() + slideInVertically { -it },
+            exit = fadeOut() + slideOutVertically { -it },
+            modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 6.dp),
+        ) {
+            SyncPill(sync)
+        }
+
         BottomBar(
             tab = tab,
             onTab = navigate,
@@ -219,6 +250,27 @@ private fun Shell(vm: AppViewModel) {
         )
         SettingsSheet(vm, open = settingsOpen, onClose = { settingsOpen = false }, onTeams = { teamsOpen = true })
         TeamsSheet(vm, open = teamsOpen, onClose = { teamsOpen = false })
+    }
+}
+
+@Composable
+private fun SyncPill(sync: SyncState) {
+    val c = LocalPulso.current
+    val pending = when (sync.pending) {
+        0 -> ""
+        1 -> " · 1 cambio pendiente"
+        else -> " · ${sync.pending} cambios pendientes"
+    }
+    Row(
+        Modifier.clip(RoundedCornerShape(999.dp)).background(c.ink).padding(horizontal = 14.dp, vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(Modifier.size(7.dp).clip(CircleShape).background(c.accent))
+        Spacer(Modifier.width(8.dp))
+        Text(
+            (if (sync.offline) "Sin conexión" else "Sincronizando") + pending,
+            style = Type.sans(12.5.sp, FontWeight.Medium), color = c.onInk, maxLines = 1,
+        )
     }
 }
 

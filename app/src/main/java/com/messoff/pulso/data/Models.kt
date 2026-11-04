@@ -47,9 +47,18 @@ data class CalEvent(
     val teamId: String? = null,
     val authorId: String? = null,
     val authorName: String? = null,
+    /** none | daily | weekdays | weekly | monthly */
+    val repeat: String = "none",
+    /** Último día de la serie (YYYY-MM-DD) o null si no termina. */
+    val repeatUntil: String? = null,
+    /** Días de la serie que no se celebran. */
+    val repeatSkip: List<String> = emptyList(),
+    /** Minutos de antelación del aviso; null si no avisa. */
+    val remind: Int? = null,
 ) {
     val cat: Category get() = Category.of(category)
     val end: Int get() = start + duration
+    val isRepeating: Boolean get() = repeat != "none"
 }
 
 @Serializable
@@ -123,4 +132,5 @@ data class BootstrapResponse(
 @Serializable data class ScheduleResponse(val event: CalEvent, val task: Task)
 @Serializable data class SessionsResponse(val sessions: List<FocusSession>)
 @Serializable data class SessionResponse(val session: FocusSession)
+@Serializable data class CalendarLinkResponse(val url: String? = null)
 @Serializable data class ErrorResponse(val error: String? = null, val code: String? = null)

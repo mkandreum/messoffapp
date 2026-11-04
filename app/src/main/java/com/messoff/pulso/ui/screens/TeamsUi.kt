@@ -41,10 +41,19 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
@@ -197,8 +206,61 @@ fun InvitationBanner(vm: AppViewModel, onOpen: () -> Unit) {
 
 // ======================= Vista Agenda =======================
 
+private sealed interface AgendaRow {
+    val key: String
+    data class Month(val first: LocalDate) : AgendaRow { override val key = "m$first" }
+    data class Day(val day: LocalDate, val list: List<CalEvent>) : AgendaRow { override val key = "d$day" }
+    data class Free(val from: LocalDate, val to: LocalDate) : AgendaRow { override val key = "f$from" }
+}
+
+/** Lista continua de días: los días sin nada se pliegan en una sola fila. */
+private fun agendaRows(from: LocalDate, to: LocalDate, today: LocalDate, byDate: Map<String, List<CalEvent>>): List<AgendaRow> {
+    val rows = ArrayList<AgendaRow>()
+    var month: LocalDate? = null
+    var freeStart: LocalDate? = null
+    fun closeFree(until: LocalDate) {
+        freeStart?.let { rows += AgendaRow.Free(it, until) }
+        freeStart = null
+    }
+    var day = from
+    while (day <= to) {
+        val list = byDate[Dates.iso(day)].orEmpty()
+        if (list.isEmpty() && day != today) {
+            if (freeStart == null) {
+                if (day.withDayOfMonth(1) != month) {
+                    month = day.withDayOfMonth(1)
+                    rows += AgendaRow.Month(month!!)
+                }
+                freeStart = day
+            } else if (day.dayOfMonth == 1) {
+                closeFree(day.minusDays(1))
+                month = day
+                rows += AgendaRow.Month(day)
+                freeStart = day
+            }
+        } else {
+            closeFree(day.minusDays(1))
+            if (day.withDayOfMonth(1) != month) {
+                month = day.withDayOfMonth(1)
+                rows += AgendaRow.Month(month!!)
+            }
+            rows += AgendaRow.Day(day, list.sortedWith(compareBy({ it.start }, { -it.duration })))
+        }
+        day = day.plusDays(1)
+    }
+    closeFree(to)
+    return rows
+}
+
 @Composable
-fun AgendaList(vm: AppViewModel, days: List<LocalDate>, onOpen: (String) -> Unit, onSlot: (LocalDate, Int) -> Unit) {
+fun AgendaList(
+    vm: AppViewModel,
+    jumpTo: LocalDate?,
+    onJumped: () -> Unit,
+    onTopDay: (LocalDate) -> Unit,
+    onOpen: (String) -> Unit,
+    onSlot: (LocalDate, Int) -> Unit,
+) {
     val c = LocalPulso.current
     val events by vm.events.collectAsState()
     val teams by vm.teams.collectAsState()
@@ -207,84 +269,133 @@ fun AgendaList(vm: AppViewModel, days: List<LocalDate>, onOpen: (String) -> Unit
     val nowMin = Dates.nowMinutes(now)
     val auth by vm.auth.collectAsState()
     val myId = (auth as? AuthState.SignedIn)?.user?.id
-    var showPast by remember(days.first()) { mutableStateOf(false) }
+    var from by rememberSaveable { mutableStateOf(today.toEpochDay()) }
+    var to by rememberSaveable { mutableStateOf(today.plusDays(60).toEpochDay()) }
+    val byDate = remember(events) { events.groupBy { it.date } }
+    val rows = remember(from, to, today, byDate) { agendaRows(LocalDate.ofEpochDay(from), LocalDate.ofEpochDay(to), today, byDate) }
+    val currentRows by rememberUpdatedState(rows)
+    val list = rememberLazyListState()
 
-    val todayIndex = days.indexOf(today)
-    val hiddenPast = if (!showPast && todayIndex > 0) todayIndex else 0
-    val visible = days.drop(hiddenPast)
+    fun rowFirstDay(row: AgendaRow): LocalDate = when (row) {
+        is AgendaRow.Month -> row.first
+        is AgendaRow.Day -> row.day
+        is AgendaRow.Free -> row.from
+    }
 
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        if (hiddenPast > 0) {
-            Row(
-                Modifier.fillMaxWidth().height(44.dp).dashedBorder(c.lineStrong, 14.dp).clip(RoundedCornerShape(14.dp))
-                    .press(haptics = vm.haptics) { showPast = true },
-                horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
-            ) {
-                LucideIcon(LucideData.ChevronDown, c.ink3, 16.dp, 2f)
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    if (hiddenPast == 1) "Ver el día anterior" else "Ver los $hiddenPast días anteriores",
-                    style = Type.sans(14.sp, FontWeight.SemiBold), color = c.ink3,
-                )
+    // El día de arriba manda en la píldora de fecha; al acercarse al final, se carga más.
+    LaunchedEffect(list) {
+        snapshotFlow { list.firstVisibleItemIndex }.collect { index ->
+            currentRows.getOrNull(index + 1)?.let { onTopDay(rowFirstDay(it)) }
+        }
+    }
+    LaunchedEffect(list) {
+        snapshotFlow { list.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0 }.collect { last ->
+            if (last >= currentRows.size - 8) to = LocalDate.ofEpochDay(to).plusDays(60).toEpochDay()
+        }
+    }
+    LaunchedEffect(jumpTo) {
+        val target = jumpTo ?: return@LaunchedEffect
+        if (target.toEpochDay() < from) from = target.minusDays(14).toEpochDay()
+        if (target.toEpochDay() > to) to = target.plusDays(60).toEpochDay()
+        withFrameMillis { }
+        val index = currentRows.indexOfFirst {
+            when (it) {
+                is AgendaRow.Day -> it.day >= target
+                is AgendaRow.Free -> it.to >= target
+                is AgendaRow.Month -> false
             }
         }
-        if (days.sumOf { d -> events.count { it.date == Dates.iso(d) } } == 0) {
-            com.messoff.pulso.ui.components.EmptyState("✳", "Semana en blanco.", "Toca un día para añadir lo primero que importe.")
+        if (index >= 0) list.animateScrollToItem(index)
+        onJumped()
+    }
+
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        state = list,
+        contentPadding = PaddingValues(bottom = 130.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        item(key = "past") {
+            Row(
+                Modifier.fillMaxWidth().height(44.dp).dashedBorder(c.lineStrong, 14.dp).clip(RoundedCornerShape(14.dp))
+                    .press(haptics = vm.haptics) { from = LocalDate.ofEpochDay(from).minusDays(14).toEpochDay() },
+                horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
+            ) {
+                LucideIcon(LucideData.ChevronDown, c.ink3, 16.dp, 2f, Modifier.rotate(180f))
+                Spacer(Modifier.width(6.dp))
+                Text("Ver días anteriores", style = Type.sans(14.sp, FontWeight.SemiBold), color = c.ink3)
+            }
         }
-        visible.forEachIndexed { index, day ->
-            val list = events.filter { it.date == Dates.iso(day) }.sortedWith(compareBy({ it.start }, { -it.duration }))
-            val isToday = day == today
-            val busy = list.sumOf { it.duration }
-            val nextIdx = if (isToday) list.indexOfFirst { it.end > nowMin } else -1
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .then(
-                        if (list.isEmpty()) Modifier.dashedBorder(c.lineStrong, 22.dp)
-                        else Modifier
-                            .shadow(10.dp, RoundedCornerShape(22.dp), ambientColor = Color(0x22000000), spotColor = Color(0x22000000))
+        rows.forEach { row ->
+            when (row) {
+                is AgendaRow.Month -> stickyHeader(key = row.key) {
+                    Text(
+                        Dates.month(row.first).replaceFirstChar { it.uppercase() },
+                        style = Type.sans(13.sp, FontWeight.Bold, 0.04.sp), color = c.ink2,
+                        modifier = Modifier.fillMaxWidth().background(c.paper).padding(start = 4.dp, top = 6.dp, bottom = 6.dp),
+                    )
+                }
+                is AgendaRow.Free -> item(key = row.key) {
+                    Row(
+                        Modifier.animateItem().fillMaxWidth().dashedBorder(c.lineStrong, 18.dp).clip(RoundedCornerShape(18.dp))
+                            .press(scaleTo = 0.985f, haptics = vm.haptics) { onSlot(row.from, 9 * 60) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            if (row.from == row.to) "Libre · ${Dates.dateMedium(row.from)}"
+                            else "Libre · ${Dates.dateMedium(row.from)} – ${Dates.dateMedium(row.to)}",
+                            style = Type.sans(14.sp), color = c.ink3, modifier = Modifier.weight(1f),
+                        )
+                        LucideIcon(LucideData.Plus, c.ink3, 18.dp, 2f)
+                    }
+                }
+                is AgendaRow.Day -> item(key = row.key) {
+                    val day = row.day
+                    val isToday = day == today
+                    val busy = row.list.sumOf { it.duration }
+                    val nextIdx = if (isToday) row.list.indexOfFirst { it.end > nowMin } else -1
+                    Column(
+                        Modifier
+                            .animateItem()
+                            .fillMaxWidth()
                             .clip(RoundedCornerShape(22.dp))
                             .background(c.paper2)
                             .border(if (isToday) 1.5.dp else 1.dp, if (isToday) c.accent.copy(alpha = 0.5f) else c.line, RoundedCornerShape(22.dp)),
-                    )
-                    .clip(RoundedCornerShape(22.dp)),
-            ) {
-                Row(
-                    Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp, top = if (list.isEmpty()) 8.dp else 14.dp, bottom = if (list.isEmpty()) 8.dp else 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "${day.dayOfMonth}",
-                        style = Type.serif(if (list.isEmpty()) 30.sp else 44.sp), color = if (isToday) c.accent else if (list.isEmpty()) c.ink3 else c.ink,
-                        modifier = Modifier.width(52.dp),
-                    )
-                    Column(Modifier.weight(1f)) {
-                        Text(Dates.WEEKDAYS[day.dayOfWeek.value - 1], style = Type.sans(16.sp, FontWeight.SemiBold), color = c.ink)
-                        Text(
-                            (if (index == 0 || day.dayOfMonth == 1) "${Dates.MONTHS[day.monthValue - 1]} · " else "") +
-                                if (list.isEmpty()) "libre" else "${list.size} ${if (list.size == 1) "evento" else "eventos"} · ${Dates.duration(busy)}",
-                            style = Type.sans(13.sp), color = c.ink3,
-                        )
-                    }
-                    if (isToday) {
-                        Box(Modifier.clip(RoundedCornerShape(999.dp)).background(c.accent).padding(horizontal = 10.dp, vertical = 5.dp)) {
-                            Text("HOY", style = Type.sans(11.sp, FontWeight.Bold, 0.08.sp), color = c.accentInk)
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp, top = 12.dp, bottom = if (row.list.isEmpty()) 12.dp else 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("${day.dayOfMonth}", style = Type.serif(38.sp), color = if (isToday) c.accent else c.ink, modifier = Modifier.width(52.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(Dates.WEEKDAYS[day.dayOfWeek.value - 1], style = Type.sans(16.sp, FontWeight.SemiBold), color = c.ink)
+                                Text(
+                                    if (row.list.isEmpty()) "libre" else "${row.list.size} ${if (row.list.size == 1) "evento" else "eventos"} · ${Dates.duration(busy)}",
+                                    style = Type.sans(13.sp), color = c.ink3,
+                                )
+                            }
+                            if (isToday) {
+                                Box(Modifier.clip(RoundedCornerShape(999.dp)).background(c.accent).padding(horizontal = 10.dp, vertical = 5.dp)) {
+                                    Text("HOY", style = Type.sans(11.sp, FontWeight.Bold, 0.08.sp), color = c.accentInk)
+                                }
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Box(
+                                Modifier.size(38.dp).clip(CircleShape).border(1.dp, c.line, CircleShape).background(c.paper)
+                                    .press(scaleTo = 0.85f, haptics = vm.haptics) { onSlot(day, 9 * 60) },
+                                contentAlignment = Alignment.Center,
+                            ) { LucideIcon(LucideData.Plus, c.ink2, 18.dp, 2f) }
                         }
-                        Spacer(Modifier.width(8.dp))
-                    }
-                    Box(
-                        Modifier.size(38.dp).clip(CircleShape).border(1.dp, c.line, CircleShape).background(c.paper)
-                            .press(scaleTo = 0.85f, haptics = vm.haptics) { onSlot(day, 9 * 60) },
-                        contentAlignment = Alignment.Center,
-                    ) { LucideIcon(LucideData.Plus, c.ink2, 18.dp, 2f) }
-                }
-                if (list.isNotEmpty()) {
-                    Column(Modifier.padding(start = 8.dp, end = 8.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        list.forEachIndexed { i, event ->
-                            val past = isToday && event.end <= nowMin
-                            val current = isToday && event.start <= nowMin && event.end > nowMin
-                            if (isToday && i == nextIdx && !current) NowDivider(nowMin)
-                            AgendaEvent(vm, event, teams, myId, past, current, onOpen)
+                        if (row.list.isNotEmpty()) {
+                            Column(Modifier.padding(start = 8.dp, end = 8.dp, bottom = 10.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                row.list.forEachIndexed { i, event ->
+                                    val past = isToday && event.end <= nowMin
+                                    val current = isToday && event.start <= nowMin && event.end > nowMin
+                                    if (isToday && i == nextIdx && !current) NowDivider(nowMin)
+                                    AgendaEvent(vm, event, teams, myId, past, current, onOpen)
+                                }
+                            }
                         }
                     }
                 }

@@ -1,9 +1,16 @@
 package com.messoff.pulso
 
 import android.app.Application
+import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.messoff.pulso.data.ApiException
+import com.messoff.pulso.data.CalendarLinkResponse
+import com.messoff.pulso.data.LocalStore
+import com.messoff.pulso.data.PendingOp
+import com.messoff.pulso.data.Snapshot
 import com.messoff.pulso.data.BootstrapResponse
 import com.messoff.pulso.data.CalEvent
 import com.messoff.pulso.data.Category
@@ -23,7 +30,11 @@ import com.messoff.pulso.data.User
 import com.messoff.pulso.data.UserResponse
 import com.messoff.pulso.focus.FocusAlarm
 import com.messoff.pulso.haptics.Haptic
+import com.messoff.pulso.reminders.Reminders
 import com.messoff.pulso.util.Dates
+import com.messoff.pulso.util.Recurrence
+import com.messoff.pulso.widget.TodayWidget
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,9 +43,16 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
+import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.temporal.ChronoUnit
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -51,6 +69,15 @@ data class ToastMsg(
     val action: (() -> Unit)? = null,
 )
 
+/** Estado de la sincronización que se enseña en la barra superior. */
+data class SyncState(val offline: Boolean = false, val pending: Int = 0)
+
+/** Lo que pide abrir una notificación o el widget. */
+sealed interface OpenRequest {
+    data class Event(val id: String) : OpenRequest
+    data object NewEvent : OpenRequest
+}
+
 data class FocusState(
     val preset: Int = 25,
     val endsAt: Long = 0L,
@@ -66,6 +93,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val pulso = app as PulsoApp
     private val api = pulso.api
     private val session = pulso.session
+    private val store = pulso.store
     val haptics = pulso.haptics
 
     private val _auth = MutableStateFlow<AuthState>(AuthState.Loading)
@@ -78,7 +106,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Solo los eventos de los calendarios visibles. */
     val events: StateFlow<List<CalEvent>> = combine(_events, _hidden) { list, hidden ->
-        if (hidden.isEmpty()) list else list.filterNot { (it.teamId ?: "me") in hidden }
+        val visible = if (hidden.isEmpty()) list else list.filterNot { (it.teamId ?: "me") in hidden }
+        val today = LocalDate.now()
+        Recurrence.expand(visible, today.minusDays(WINDOW_BACK), today.plusDays(WINDOW_AHEAD))
     }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _teams = MutableStateFlow<List<Team>>(emptyList())
@@ -107,6 +137,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     )
     val focus: StateFlow<FocusState> = _focus.asStateFlow()
 
+    private val _openRequest = MutableStateFlow<OpenRequest?>(null)
+    val openRequest: StateFlow<OpenRequest?> = _openRequest.asStateFlow()
+
+    // Cambios pendientes de enviar: sobreviven a cerrar la app y se envían en orden.
+    private val queue = ArrayDeque(store.loadQueue())
+    private val rejects = HashMap<String, (Throwable) -> Unit>()
+    private var flushJob: Job? = null
+    private var sending: String? = null
+    private var dataReady = false
+
+    private val _sync = MutableStateFlow(SyncState(pending = queue.size))
+    val sync: StateFlow<SyncState> = _sync.asStateFlow()
+
+    private val network = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(net: Network) {
+            viewModelScope.launch {
+                flush()
+                syncNow()
+            }
+        }
+    }
+
     private val saveJobs = HashMap<String, Job>()
     private val inflight = AtomicInteger(0)
     private var lastSync = 0L
@@ -128,10 +180,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             while (true) {
                 delay(30_000)
-                if (_auth.value is AuthState.SignedIn && _teams.value.isNotEmpty()) syncNow()
+                val waiting = queue.isNotEmpty() || _sync.value.offline
+                if (_auth.value is AuthState.SignedIn && (_teams.value.isNotEmpty() || waiting)) {
+                    flush()
+                    syncNow()
+                }
             }
         }
+        // La copia local, los avisos y el widget siguen a los datos, sin prisa.
+        viewModelScope.launch {
+            combine(_events, _tasks, _teams, _invitations, _hidden) { _, _, _, _, _ -> }.collectLatest {
+                delay(600)
+                persistLocal()
+            }
+        }
+        runCatching { app.getSystemService(ConnectivityManager::class.java)?.registerDefaultNetworkCallback(network) }
         boot()
+    }
+
+    override fun onCleared() {
+        runCatching { getApplication<Application>().getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(network) }
+    }
+
+    private suspend fun persistLocal() {
+        val user = (_auth.value as? AuthState.SignedIn)?.user ?: return
+        if (!dataReady) return
+        val context = getApplication<Application>()
+        val snapshot = Snapshot(user, _events.value, _tasks.value, _teams.value, _invitations.value)
+        val hidden = _hidden.value
+        withContext(Dispatchers.IO) {
+            store.saveSnapshot(snapshot)
+            Reminders.sync(context, snapshot.events.filterNot { (it.teamId ?: "me") in hidden })
+            TodayWidget.refresh(context)
+        }
+    }
+
+    fun handleIntent(intent: Intent?) {
+        if (intent == null) return
+        val id = intent.getStringExtra(MainActivity.EXTRA_EVENT)
+        when {
+            id != null -> _openRequest.value = OpenRequest.Event(id)
+            intent.getBooleanExtra(MainActivity.EXTRA_NEW, false) -> _openRequest.value = OpenRequest.NewEvent
+        }
+        intent.removeExtra(MainActivity.EXTRA_EVENT)
+        intent.removeExtra(MainActivity.EXTRA_NEW)
+    }
+
+    fun consumeOpenRequest() {
+        _openRequest.value = null
     }
 
     val serverUrl: String get() = session.baseUrl
@@ -142,27 +238,57 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             _auth.value = AuthState.SignedOut()
             return
         }
-        _auth.value = AuthState.Loading
+        // Con copia local se entra al momento; el servidor confirma por detrás.
+        val cached = store.loadSnapshot()
+        if (cached != null) {
+            applySnapshot(cached)
+            applyUser(cached.user)
+            _auth.value = AuthState.SignedIn(cached.user)
+        } else {
+            _auth.value = AuthState.Loading
+        }
         viewModelScope.launch {
             try {
                 val data = api.get<UserResponse>("/auth/me")
                 signedIn(data.user)
             } catch (e: Throwable) {
-                if (e is ApiException && e.status == 401) {
-                    session.token = null
-                    _auth.value = AuthState.SignedOut()
-                } else {
-                    _auth.value = AuthState.SignedOut(e.message ?: "No se pudo comprobar la sesión.")
+                when {
+                    e is ApiException && e.status == 401 -> clearLocal()
+                    cached != null -> setOffline(true)
+                    else -> _auth.value = AuthState.SignedOut(e.message ?: "No se pudo comprobar la sesión.")
                 }
             }
         }
     }
 
+    private fun applySnapshot(data: Snapshot) {
+        _events.value = data.events
+        _tasks.value = data.tasks
+        _teams.value = data.teams
+        _invitations.value = data.invitations
+        dataReady = true
+    }
+
+    private fun setOffline(offline: Boolean) {
+        _sync.update { it.copy(offline = offline) }
+    }
+
     private fun signedIn(user: User) {
+        // Otra cuenta en este móvil: lo guardado no es suyo.
+        val cached = store.loadSnapshot()
+        if (cached != null && cached.user.id != user.id) clearStored()
         applyUser(user)
         _auth.value = AuthState.SignedIn(user)
         loadData()
         loadSessions()
+    }
+
+    private fun clearStored() {
+        store.clear()
+        queue.clear()
+        rejects.clear()
+        dataReady = false
+        _sync.value = SyncState()
     }
 
     private fun applyUser(user: User) {
@@ -191,6 +317,69 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         if (error is ApiException && error.status == 401) return
         haptics.play(Haptic.Warning)
         notify((error as? ApiException)?.message ?: fallback)
+    }
+
+    /**
+     * Un cambio de datos: se guarda en la cola y se envía en cuanto se pueda.
+     * Sin conexión no se deshace nada; solo se deshace si el servidor lo rechaza.
+     */
+    private fun send(method: String, path: String, body: JsonElement?, onReject: (Throwable) -> Unit) {
+        val text = body?.toString()
+        val last = queue.lastOrNull()
+        if (method == "PATCH" && last != null && last.method == "PATCH" && last.path == path && last.id != sending) {
+            // Dos ediciones seguidas del mismo evento viajan como una sola.
+            val merged = JsonObject(api.json.parseToJsonElement(last.body ?: "{}").jsonObject + api.json.parseToJsonElement(text ?: "{}").jsonObject)
+            queue[queue.lastIndex] = last.copy(body = merged.toString())
+        } else {
+            val op = PendingOp(uid(), method, path, text)
+            queue.addLast(op)
+            rejects[op.id] = onReject
+        }
+        publishQueue()
+        flush()
+    }
+
+    private fun publishQueue() {
+        store.saveQueue(queue.toList())
+        _sync.update { it.copy(pending = queue.size) }
+    }
+
+    private fun flush() {
+        if (flushJob?.isActive == true || queue.isEmpty()) return
+        flushJob = viewModelScope.launch {
+            while (queue.isNotEmpty()) {
+                val op = queue.first()
+                sending = op.id
+                try {
+                    api.raw(op.method, op.path, op.body?.let { api.json.parseToJsonElement(it) })
+                    setOffline(false)
+                    finishOp(op)
+                } catch (e: ApiException) {
+                    when {
+                        e.status == 0 || e.status == 429 || e.status >= 500 -> {
+                            if (e.status == 0) setOffline(true)
+                            break
+                        }
+                        e.status == 401 -> break
+                        // Ya estaba creado o ya no existe: no hay nada más que hacer con él.
+                        e.status == 404 || e.status == 409 -> finishOp(op)
+                        else -> {
+                            val reject = rejects[op.id]
+                            finishOp(op)
+                            reject?.invoke(e)
+                        }
+                    }
+                }
+            }
+            sending = null
+            lastSync = System.currentTimeMillis()
+        }
+    }
+
+    private fun finishOp(op: PendingOp) {
+        queue.removeFirstOrNull()
+        rejects.remove(op.id)
+        publishQueue()
     }
 
     private fun track(block: suspend () -> Unit, onError: (Throwable) -> Unit) {
@@ -226,6 +415,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun logout() {
         viewModelScope.launch {
+            flush()
+            flushJob?.join()
             runCatching { api.raw("POST", "/auth/logout") }
             clearLocal()
         }
@@ -233,6 +424,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun logoutAll() {
         viewModelScope.launch {
+            flush()
+            flushJob?.join()
             runCatching { api.raw("POST", "/auth/logout-all") }
             clearLocal()
         }
@@ -242,8 +435,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         session.token = null
         _events.value = emptyList()
         _tasks.value = emptyList()
+        _teams.value = emptyList()
+        _invitations.value = emptyList()
+        clearStored()
+        val context = getApplication<Application>()
+        Reminders.clear(context)
+        TodayWidget.refresh(context)
         _auth.value = AuthState.SignedOut(notice)
     }
+
+    // ---------- Suscripción ICS ----------
+
+    suspend fun calendarLink(): String? = api.get<CalendarLinkResponse>("/calendar/link").url
+
+    suspend fun createCalendarLink(): String? = api.post<CalendarLinkResponse>("/calendar/link", api.obj()).url
+
+    suspend fun revokeCalendarLink() = api.delete("/calendar/link")
 
     suspend fun updateName(name: String) {
         val data = api.patch<UserResponse>("/auth/me", api.obj("name" to name))
@@ -291,16 +498,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _loadError.value = null
         viewModelScope.launch {
             try {
+                flush()
+                flushJob?.join()
+                // Lo pendiente manda: traer ahora del servidor lo pisaría.
+                if (queue.isNotEmpty()) return@launch
                 val data = api.get<BootstrapResponse>("/bootstrap")
                 _events.value = data.events
                 _tasks.value = data.tasks
                 _teams.value = data.teams
                 _invitations.value = data.invitations
+                dataReady = true
                 applyUser(data.user)
                 _auth.value = AuthState.SignedIn(data.user)
+                setOffline(false)
                 lastSync = System.currentTimeMillis()
             } catch (e: Throwable) {
-                if (!(e is ApiException && e.status == 401)) _loadError.value = e.message ?: "No se pudo cargar tu agenda."
+                if (dataReady) {
+                    if (e is ApiException && e.status == 0) setOffline(true)
+                } else if (!(e is ApiException && e.status == 401)) {
+                    _loadError.value = e.message ?: "No se pudo cargar tu agenda."
+                }
             } finally {
                 _loading.value = false
             }
@@ -312,21 +529,26 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _now.value = LocalDateTime.now()
         if (_auth.value !is AuthState.SignedIn) return
         if (System.currentTimeMillis() - lastSync < 20_000) return
+        flush()
         if (inflight.get() > 0 || saveJobs.isNotEmpty()) return
         viewModelScope.launch { syncNow() }
     }
 
     /** Trae los datos del servidor sin pisar cambios en vuelo. */
     private suspend fun syncNow() {
-        if (inflight.get() > 0 || saveJobs.isNotEmpty()) return
+        if (inflight.get() > 0 || saveJobs.isNotEmpty() || queue.isNotEmpty()) return
         runCatching { api.get<BootstrapResponse>("/bootstrap") }.onSuccess { data ->
-            if (inflight.get() == 0 && saveJobs.isEmpty()) {
+            if (inflight.get() == 0 && saveJobs.isEmpty() && queue.isEmpty()) {
                 _events.value = data.events
                 _tasks.value = data.tasks
                 _teams.value = data.teams
                 _invitations.value = data.invitations
+                dataReady = true
+                setOffline(false)
                 lastSync = System.currentTimeMillis()
             }
+        }.onFailure { e ->
+            if (e is ApiException && e.status == 0) setOffline(true)
         }
     }
 
@@ -422,89 +644,167 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         return if (start == e.start && duration == e.duration) e else e.copy(start = start, duration = duration)
     }
 
+    /** El evento tal como se ve: la serie o una de sus apariciones. */
+    private fun findEvent(id: String): CalEvent? {
+        val base = _events.value.firstOrNull { it.id == Recurrence.seriesId(id) } ?: return null
+        val day = Recurrence.occurrenceDate(id) ?: return base
+        return base.copy(id = id, date = day.toString())
+    }
+
+    private fun sendEventPatch(id: String, body: JsonElement, onReject: (Throwable) -> Unit) =
+        send("PATCH", "/events/$id", body, onReject)
+
     fun addEvent(input: CalEvent): CalEvent {
         val event = clamp(input.copy(id = uid()))
         _events.update { it + event }
-        track({ api.post<EventResponse>("/events", api.encode(event)) }) { e ->
+        send("POST", "/events", api.encode(event)) { e ->
             _events.update { list -> list.filterNot { it.id == event.id } }
             fail(e, "No se pudo crear el evento")
         }
         return event
     }
 
-    fun saveEvent(input: CalEvent) {
-        val next = clamp(input)
+    /**
+     * Guarda los cambios de un evento o de toda su serie. Devuelve el id con el que
+     * queda: cambia si se mueve de día una aparición que no es la primera.
+     */
+    fun saveEvent(input: CalEvent): String {
+        val seriesId = Recurrence.seriesId(input.id)
+        val base = _events.value.firstOrNull { it.id == seriesId }
+        val occurrence = Recurrence.occurrenceDate(input.id)
+        val merged = when {
+            occurrence == null || base == null -> input
+            !input.isRepeating -> input.copy(id = seriesId, repeatSkip = emptyList())
+            else -> {
+                // Mover una aparición de día desplaza toda la serie lo mismo.
+                val shift = ChronoUnit.DAYS.between(occurrence, Dates.parse(input.date))
+                input.copy(id = seriesId, date = Dates.parse(base.date).plusDays(shift).toString(), repeatSkip = base.repeatSkip)
+            }
+        }
+        val next = clamp(merged)
         _events.update { list -> list.map { if (it.id == next.id) next else it } }
-        saveJobs.remove(next.id)?.cancel()
-        saveJobs[next.id] = viewModelScope.launch {
+        saveJobs.remove(seriesId)?.cancel()
+        saveJobs[seriesId] = viewModelScope.launch {
             delay(350)
-            saveJobs.remove(next.id)
+            saveJobs.remove(seriesId)
             if (next.title.isBlank()) return@launch
-            inflight.incrementAndGet()
-            try {
-                api.patch<EventResponse>("/events/${next.id}", api.encode(next))
-            } catch (e: Throwable) {
+            sendEventPatch(seriesId, api.encode(next)) { e ->
                 fail(e, "No se pudo guardar el evento")
                 loadData()
-            } finally {
-                inflight.decrementAndGet()
-                lastSync = System.currentTimeMillis()
             }
+        }
+        return if (occurrence != null && next.isRepeating) {
+            Recurrence.occurrenceId(seriesId, Dates.parse(input.date), Dates.parse(next.date))
+        } else {
+            seriesId
         }
     }
 
-    fun moveEvent(id: String, date: String, start: Int): CalEvent? {
-        val previous = _events.value.firstOrNull { it.id == id } ?: return null
-        if (previous.date == date && previous.start == start) return previous
+    private fun setSkipped(seriesId: String, day: String, skipped: Boolean) {
+        val base = _events.value.firstOrNull { it.id == seriesId } ?: return
+        val skip = if (skipped) (base.repeatSkip + day).distinct() else base.repeatSkip - day
+        _events.update { list -> list.map { if (it.id == seriesId) it.copy(repeatSkip = skip) else it } }
+        sendEventPatch(seriesId, api.obj("repeatSkip" to api.encode(skip))) { e ->
+            _events.update { list -> list.map { if (it.id == seriesId) base else it } }
+            fail(e, "No se pudo cambiar la serie")
+        }
+    }
+
+    /** Saca una aparición de su serie y la convierte en un evento suelto. Devuelve cómo deshacerlo. */
+    private fun splitOff(occurrence: CalEvent, edit: (CalEvent) -> CalEvent): Pair<CalEvent, () -> Unit> {
+        val seriesId = Recurrence.seriesId(occurrence.id)
+        val day = occurrence.date
+        saveJobs.remove(seriesId)?.cancel()
+        setSkipped(seriesId, day, true)
+        val single = addEvent(
+            edit(
+                occurrence.copy(
+                    repeat = "none", repeatUntil = null, repeatSkip = emptyList(),
+                    checklist = occurrence.checklist.map { it.copy(id = uid()) },
+                ),
+            ),
+        )
+        return single to {
+            deleteEvent(single.id)
+            setSkipped(seriesId, day, false)
+        }
+    }
+
+    /** Para editar solo una aparición: la separa y devuelve el evento suelto. */
+    fun detachOccurrence(id: String): CalEvent? {
+        val occurrence = findEvent(id) ?: return null
+        return splitOff(occurrence) { it }.first
+    }
+
+    /** Devuelve cómo deshacer el movimiento, o null si no cambió nada. */
+    fun moveEvent(id: String, date: String, start: Int): (() -> Unit)? {
+        val previous = findEvent(id) ?: return null
+        if (previous.date == date && previous.start == start) return null
+        if (previous.isRepeating) return splitOff(previous) { it.copy(date = date, start = start) }.second
         saveJobs.remove(id)?.cancel()
         val next = clamp(previous.copy(date = date, start = start))
         _events.update { list -> list.map { if (it.id == id) next else it } }
-        track({ api.patch<EventResponse>("/events/$id", api.encode(next)) }) { e ->
+        sendEventPatch(id, api.encode(next)) { e ->
             _events.update { list -> list.map { if (it.id == id) previous else it } }
             fail(e, "No se pudo mover el evento")
         }
-        return previous
+        return { moveEvent(id, previous.date, previous.start) }
+    }
+
+    /** Cambia la duración arrastrando el borde. Devuelve cómo deshacerlo. */
+    fun resizeEvent(id: String, duration: Int): (() -> Unit)? {
+        val previous = findEvent(id) ?: return null
+        if (previous.duration == duration) return null
+        if (previous.isRepeating) return splitOff(previous) { it.copy(duration = duration) }.second
+        saveJobs.remove(id)?.cancel()
+        val next = clamp(previous.copy(duration = duration))
+        _events.update { list -> list.map { if (it.id == id) next else it } }
+        sendEventPatch(id, api.encode(next)) { e ->
+            _events.update { list -> list.map { if (it.id == id) previous else it } }
+            fail(e, "No se pudo cambiar la duración")
+        }
+        return { resizeEvent(id, previous.duration) }
     }
 
     fun duplicateEvent(id: String, onDone: (CalEvent) -> Unit) {
-        track({
-            val data = api.post<EventResponse>("/events/$id/duplicate")
-            _events.update { it + data.event }
-            onDone(data.event)
-        }) { e -> fail(e, "No se pudo duplicar el evento") }
+        val source = findEvent(id) ?: return
+        onDone(
+            addEvent(
+                source.copy(
+                    title = "${source.title} (copia)", repeat = "none", repeatUntil = null, repeatSkip = emptyList(),
+                    checklist = source.checklist.map { it.copy(id = uid(), done = false) },
+                ),
+            ),
+        )
     }
 
+    /** Borra el evento o la serie entera. */
     fun deleteEvent(id: String): CalEvent? {
-        val previous = _events.value.firstOrNull { it.id == id } ?: return null
-        saveJobs.remove(id)?.cancel()
-        _events.update { list -> list.filterNot { it.id == id } }
-        track({ api.delete("/events/$id") }) { e ->
+        val seriesId = Recurrence.seriesId(id)
+        val previous = _events.value.firstOrNull { it.id == seriesId } ?: return null
+        saveJobs.remove(seriesId)?.cancel()
+        _events.update { list -> list.filterNot { it.id == seriesId } }
+        send("DELETE", "/events/$seriesId", null) { e ->
             _events.update { it + previous }
             fail(e, "No se pudo eliminar el evento")
         }
         return previous
     }
 
+    /** Quita solo este día de la serie. Devuelve cómo deshacerlo. */
+    fun deleteOccurrence(id: String): (() -> Unit)? {
+        val occurrence = findEvent(id) ?: return null
+        val seriesId = Recurrence.seriesId(id)
+        setSkipped(seriesId, occurrence.date, true)
+        return { setSkipped(seriesId, occurrence.date, false) }
+    }
+
     fun restoreEvent(event: CalEvent) {
         _events.update { list -> if (list.any { it.id == event.id }) list else list + event }
-        track({ api.post<EventResponse>("/events", api.encode(event)) }) { e ->
+        send("POST", "/events", api.encode(event)) { e ->
             _events.update { list -> list.filterNot { it.id == event.id } }
             fail(e, "No se pudo restaurar el evento")
         }
-    }
-
-    fun repeatEvent(event: CalEvent, offsets: List<Long>, label: String) {
-        val base = Dates.parse(event.date)
-        offsets.forEach { offset ->
-            addEvent(
-                event.copy(
-                    date = Dates.iso(base.plusDays(offset)),
-                    checklist = event.checklist.map { it.copy(id = uid(), done = false) },
-                ),
-            )
-        }
-        haptics.play(Haptic.Success)
-        notify("Repetido $label")
     }
 
     fun newChecklistItem(text: String) = ChecklistItem(uid(), text, false)
@@ -512,7 +812,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun addTask(title: String, due: String?, tag: Category): Task {
         val task = Task(uid(), title, due, tag.key, false)
         _tasks.update { listOf(task) + it }
-        track({ api.post<TaskResponse>("/tasks", api.encode(task)) }) { e ->
+        send("POST", "/tasks", api.encode(task)) { e ->
             _tasks.update { list -> list.filterNot { it.id == task.id } }
             fail(e, "No se pudo crear la tarea")
         }
@@ -535,7 +835,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             if (tag != null) add("tag" to tag.key)
             if (done != null) add("done" to done)
         }
-        track({ api.patch<TaskResponse>("/tasks/$id", api.obj(*body.toTypedArray())) }) { e ->
+        send("PATCH", "/tasks/$id", api.obj(*body.toTypedArray())) { e ->
             _tasks.update { list -> list.map { if (it.id == id) previous else it } }
             fail(e, "No se pudo actualizar la tarea")
         }
@@ -557,7 +857,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteTask(id: String): Task? {
         val previous = _tasks.value.firstOrNull { it.id == id } ?: return null
         _tasks.update { list -> list.filterNot { it.id == id } }
-        track({ api.delete("/tasks/$id") }) { e ->
+        send("DELETE", "/tasks/$id", null) { e ->
             _tasks.update { it + previous }
             fail(e, "No se pudo eliminar la tarea")
         }
@@ -566,7 +866,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun restoreTask(task: Task) {
         _tasks.update { list -> if (list.any { it.id == task.id }) list else listOf(task) + list }
-        track({ api.post<TaskResponse>("/tasks", api.encode(task)) }) { e ->
+        send("POST", "/tasks", api.encode(task)) { e ->
             _tasks.update { list -> list.filterNot { it.id == task.id } }
             fail(e, "No se pudo restaurar la tarea")
         }
@@ -652,5 +952,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                 notify("La sesión terminó, pero no se pudo guardar en el servidor.")
             }
         }
+    }
+
+    private companion object {
+        // Ventana en la que se expanden las series: de sobra para cualquier vista.
+        const val WINDOW_BACK = 180L
+        const val WINDOW_AHEAD = 730L
     }
 }

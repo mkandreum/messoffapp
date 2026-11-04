@@ -1,7 +1,8 @@
 package com.messoff.pulso.ui.screens
 
-import android.app.DatePickerDialog
-import android.app.TimePickerDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.expandVertically
@@ -46,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
@@ -69,6 +71,8 @@ import com.messoff.pulso.ui.Tab
 import com.messoff.pulso.ui.components.Avatar
 import com.messoff.pulso.ui.components.BtnKind
 import com.messoff.pulso.ui.components.CategoryTag
+import com.messoff.pulso.ui.components.DayStrip
+import com.messoff.pulso.ui.components.TimeWheels
 import com.messoff.pulso.ui.components.Divider
 import com.messoff.pulso.ui.components.PulsoButton
 import com.messoff.pulso.ui.components.PulsoChip
@@ -82,7 +86,9 @@ import com.messoff.pulso.ui.icons.LucideIcon
 import com.messoff.pulso.ui.theme.LocalPulso
 import com.messoff.pulso.ui.theme.Type
 import com.messoff.pulso.util.Dates
+import com.messoff.pulso.reminders.Reminders
 import com.messoff.pulso.util.QuickParse
+import com.messoff.pulso.util.Recurrence
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -147,14 +153,25 @@ fun EventSheet(vm: AppViewModel, selectedId: String?, onClose: () -> Unit, onSel
     var draft by remember(selectedId) { mutableStateOf(event) }
     var newItem by remember(selectedId) { mutableStateOf("") }
     var newPerson by remember(selectedId) { mutableStateOf("") }
+    var dateOpen by remember(selectedId) { mutableStateOf(false) }
+    var timeOpen by remember(selectedId) { mutableStateOf(false) }
+    var confirmDelete by remember(selectedId) { mutableStateOf(false) }
 
     fun patch(next: CalEvent) {
         draft = next
-        vm.saveEvent(next)
+        val id = vm.saveEvent(next)
+        // Mover de día una aparición le cambia el id: la hoja la sigue.
+        if (id != next.id) {
+            draft = next.copy(id = id)
+            onSelect(id)
+        }
     }
 
     val date = Dates.parse(draft.date)
-    val conflict = events.firstOrNull { it.id != draft.id && it.date == draft.date && draft.start < it.end && draft.end > it.start }
+    val conflict = events.firstOrNull {
+        it.id != draft.id && Recurrence.seriesId(it.id) != Recurrence.seriesId(draft.id) &&
+            it.date == draft.date && draft.start < it.end && draft.end > it.start
+    }
     val checked = draft.checklist.count { it.done }
     val teams by vm.teams.collectAsState()
     val auth by vm.auth.collectAsState()
@@ -199,18 +216,37 @@ fun EventSheet(vm: AppViewModel, selectedId: String?, onClose: () -> Unit, onSel
             }
             Spacer(Modifier.height(18.dp))
 
-            Fact(LucideData.CalendarDays, "Fecha", "${date.dayOfMonth.toString().padStart(2, '0')}/${date.monthValue.toString().padStart(2, '0')}/${date.year}") {
-                DatePickerDialog(context, { _, y, m, d ->
-                    vm.haptics.play(Haptic.Selection)
-                    patch(draft.copy(date = Dates.iso(LocalDate.of(y, m + 1, d))))
-                }, date.year, date.monthValue - 1, date.dayOfMonth).show()
+            if (draft.isRepeating) {
+                Row(
+                    Modifier.fillMaxWidth().padding(bottom = 10.dp).clip(RoundedCornerShape(14.dp)).background(c.paper3).padding(start = 14.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    LucideIcon(LucideData.Repeat2, c.ink2, 16.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Los cambios afectan a toda la serie", style = Type.sans(13.5.sp), color = c.ink2, modifier = Modifier.weight(1f))
+                    PulsoChip("Solo este día", false, {
+                        vm.detachOccurrence(draft.id)?.let { single ->
+                            vm.haptics.play(Haptic.Snap)
+                            onSelect(single.id)
+                            vm.notify("Este día ya va por su cuenta")
+                        }
+                    })
+                }
+            }
+            Fact(LucideData.CalendarDays, "Fecha", "${date.dayOfMonth.toString().padStart(2, '0')}/${date.monthValue.toString().padStart(2, '0')}/${date.year}", open = dateOpen) {
+                dateOpen = !dateOpen
+                timeOpen = false
+            }
+            AnimatedVisibility(dateOpen, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                DayStrip(date, { patch(draft.copy(date = Dates.iso(it))) }, vm.haptics, Modifier.padding(top = 10.dp))
             }
             Spacer(Modifier.height(10.dp))
-            Fact(LucideData.Clock3, "Hora · termina a las ${Dates.time(draft.end)}", "${Dates.time(draft.start)}   ·   ${Dates.duration(draft.duration)}") {
-                TimePickerDialog(context, { _, h, m ->
-                    vm.haptics.play(Haptic.Selection)
-                    patch(draft.copy(start = h * 60 + m))
-                }, draft.start / 60, draft.start % 60, true).show()
+            Fact(LucideData.Clock3, "Hora · termina a las ${Dates.time(draft.end)}", "${Dates.time(draft.start)}   ·   ${Dates.duration(draft.duration)}", open = timeOpen) {
+                timeOpen = !timeOpen
+                dateOpen = false
+            }
+            AnimatedVisibility(timeOpen, enter = expandVertically() + fadeIn(), exit = shrinkVertically() + fadeOut()) {
+                TimeWheels(draft.start, { patch(draft.copy(start = it)) }, vm.haptics, Modifier.padding(top = 10.dp))
             }
 
             Section("Duración") {
@@ -235,13 +271,10 @@ fun EventSheet(vm: AppViewModel, selectedId: String?, onClose: () -> Unit, onSel
                 }
             }
             Section("Repetir", LucideData.Repeat2) {
-                val dow = date.dayOfWeek.value - 1
-                val rest = (1..maxOf(0, 4 - dow)).map { it.toLong() }
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PulsoChip("Al día siguiente", false, { vm.repeatEvent(draft, listOf(1), "mañana también") })
-                    PulsoChip("Resto de la semana", false, { vm.repeatEvent(draft, rest, "el resto de la semana") }, enabled = rest.isNotEmpty())
-                    PulsoChip("4 semanas", false, { vm.repeatEvent(draft, listOf(7, 14, 21, 28), "4 semanas más") })
-                }
+                RepeatPicker(vm, draft.repeat) { patch(draft.copy(repeat = it, repeatUntil = if (it == "none") null else draft.repeatUntil)) }
+            }
+            Section("Aviso", LucideData.Clock3) {
+                ReminderPicker(vm, draft.remind) { patch(draft.copy(remind = it)) }
             }
             if (teams.isNotEmpty()) {
                 val mine = draft.authorId == null || draft.authorId == myId
@@ -359,15 +392,36 @@ fun EventSheet(vm: AppViewModel, selectedId: String?, onClose: () -> Unit, onSel
         }
         Divider()
         Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 18.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Row(Modifier.press {
-                vm.haptics.play(Haptic.Error)
-                val removed = vm.deleteEvent(draft.id)
-                onClose()
-                vm.notify("Evento eliminado", "Deshacer") { removed?.let { vm.restoreEvent(it) } }
-            }.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                LucideIcon(LucideData.Trash2, c.ink2, 20.dp)
+            if (confirmDelete) {
+                PulsoChip("Solo este día", false, {
+                    vm.haptics.play(Haptic.Error)
+                    val undo = vm.deleteOccurrence(draft.id)
+                    onClose()
+                    vm.notify("Día eliminado de la serie", "Deshacer") { undo?.invoke() }
+                })
                 Spacer(Modifier.width(8.dp))
-                Text("Eliminar", style = Type.sans(16.sp, FontWeight.Medium), color = c.ink2)
+                PulsoChip("Toda la serie", false, {
+                    vm.haptics.play(Haptic.Error)
+                    val removed = vm.deleteEvent(draft.id)
+                    onClose()
+                    vm.notify("Serie eliminada", "Deshacer") { removed?.let { vm.restoreEvent(it) } }
+                })
+            } else {
+                Row(Modifier.press {
+                    if (draft.isRepeating) {
+                        vm.haptics.play(Haptic.Warning)
+                        confirmDelete = true
+                    } else {
+                        vm.haptics.play(Haptic.Error)
+                        val removed = vm.deleteEvent(draft.id)
+                        onClose()
+                        vm.notify("Evento eliminado", "Deshacer") { removed?.let { vm.restoreEvent(it) } }
+                    }
+                }.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    LucideIcon(LucideData.Trash2, c.ink2, 20.dp)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Eliminar", style = Type.sans(16.sp, FontWeight.Medium), color = c.ink2)
+                }
             }
             Spacer(Modifier.weight(1f))
             com.messoff.pulso.ui.components.AvatarStack(draft.attendees, 3, 28.dp)
@@ -378,8 +432,9 @@ fun EventSheet(vm: AppViewModel, selectedId: String?, onClose: () -> Unit, onSel
 }
 
 @Composable
-private fun Fact(icon: List<String>, label: String, value: String, onClick: () -> Unit) {
+private fun Fact(icon: List<String>, label: String, value: String, open: Boolean = false, onClick: () -> Unit) {
     val c = LocalPulso.current
+    val turn by animateFloatAsState(if (open) 90f else 0f, label = "factChevron")
     Row(
         Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.paper).border(1.dp, c.line, RoundedCornerShape(16.dp))
             .press(scaleTo = 0.98f, onClick = onClick).padding(16.dp),
@@ -392,7 +447,25 @@ private fun Fact(icon: List<String>, label: String, value: String, onClick: () -
             Spacer(Modifier.height(2.dp))
             Text(value, style = Type.sans(18.sp, FontWeight.Medium), color = c.ink)
         }
-        LucideIcon(LucideData.ChevronRight, c.ink3, 18.dp)
+        LucideIcon(LucideData.ChevronRight, c.ink3, 18.dp, modifier = Modifier.rotate(turn))
+    }
+}
+
+@Composable
+private fun RepeatPicker(vm: AppViewModel, value: String, onChange: (String) -> Unit) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Recurrence.OPTIONS.forEach { (key, label) ->
+            PulsoChip(label, value == key, { if (value != key) onChange(key) }, haptics = vm.haptics)
+        }
+    }
+}
+
+@Composable
+private fun ReminderPicker(vm: AppViewModel, value: Int?, onChange: (Int?) -> Unit) {
+    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Reminders.OPTIONS.forEach { (minutes, label) ->
+            PulsoChip(label, value == minutes, { if (value != minutes) onChange(minutes) }, haptics = vm.haptics)
+        }
     }
 }
 
@@ -406,7 +479,6 @@ private fun Section(label: String, icon: List<String>? = null, aside: String? = 
 
 // ======================= Nuevo evento =======================
 
-private val EXAMPLES = listOf("Café con Lucía mañana 09:30", "Gimnasio viernes 18:00", "Revisar OKR hoy 16:30", "Cena con Ana sábado 21:00")
 
 @Composable
 fun QuickAddSheet(vm: AppViewModel, open: Boolean, preset: QuickPreset?, onClose: () -> Unit, onCreated: (String) -> Unit) {
@@ -417,28 +489,36 @@ fun QuickAddSheet(vm: AppViewModel, open: Boolean, preset: QuickPreset?, onClose
     var duration by remember { mutableStateOf(60) }
     val teams by vm.teams.collectAsState()
     var teamId by remember { mutableStateOf(vm.lastCalendar?.takeIf { id -> vm.teams.value.any { it.id == id } }) }
+    // Lo tocado en las ruedas manda sobre el texto, hasta que el texto vuelva a decir un día o una hora.
+    var pickedDate by remember { mutableStateOf<LocalDate?>(null) }
+    var pickedStart by remember { mutableStateOf<Int?>(null) }
+    var repeat by remember { mutableStateOf("none") }
+    var remind by remember { mutableStateOf<Int?>(10) }
     val focus = remember { FocusRequester() }
     val parsed = QuickParse.parse(text, LocalDateTime.now(), preset?.date, preset?.start)
     val category = manual ?: parsed.category ?: Category.Trabajo
+    val date = pickedDate ?: parsed.date
+    val start = pickedStart ?: parsed.start
 
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    // Si vienes de tocar un hueco, la hora ya está elegida: el teclado no tapa las ruedas.
+    LaunchedEffect(Unit) { if (preset == null) runCatching { focus.requestFocus() } }
 
     fun submit() {
         if (text.isBlank()) return
         val event = vm.addEvent(
             CalEvent(
-                id = "", title = parsed.title, date = Dates.iso(parsed.date), start = parsed.start,
-                duration = duration, category = category.key, teamId = teamId,
+                id = "", title = parsed.title, date = Dates.iso(date), start = start,
+                duration = duration, category = category.key, teamId = teamId, repeat = repeat, remind = remind,
             ),
         )
         vm.rememberCalendar(teamId)
         vm.haptics.play(Haptic.Success)
         onClose()
-        vm.notify("«${parsed.title}» · ${Dates.time(parsed.start)}", "Abrir") { onCreated(event.id) }
+        vm.notify("«${parsed.title}» · ${Dates.dateMedium(date)} ${Dates.time(start)}", "Abrir") { onCreated(event.id) }
     }
 
     PulsoSheet(onClose) {
-        Column(Modifier.padding(horizontal = 22.dp).navigationBarsPadding().padding(bottom = 12.dp)) {
+        Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 22.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 LucideIcon(LucideData.Sparkles, c.accent, 16.dp)
                 Spacer(Modifier.width(8.dp))
@@ -450,40 +530,22 @@ fun QuickAddSheet(vm: AppViewModel, open: Boolean, preset: QuickPreset?, onClose
                 text, {
                     text = it
                     manual = null
+                    val next = QuickParse.parse(it, LocalDateTime.now(), preset?.date, preset?.start)
+                    if (next.matchedDay) pickedDate = null
+                    if (next.matchedTime) pickedStart = null
                 },
                 "Café con Lucía mañana 09:30", Type.serif(32.sp, lineHeight = 36.sp), focus = focus, onDone = ::submit,
             )
             Spacer(Modifier.height(14.dp))
             Divider()
             Spacer(Modifier.height(12.dp))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    LucideIcon(LucideData.CalendarDays, c.ink2, 17.dp)
-                    Spacer(Modifier.width(6.dp))
-                    Text(Dates.dateLong(parsed.date), style = Type.sans(14.5.sp), color = c.ink)
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    LucideIcon(LucideData.Clock3, c.ink2, 17.dp)
-                    Spacer(Modifier.width(6.dp))
-                    Text(Dates.range(parsed.start, duration), style = Type.sans(14.5.sp), color = c.ink)
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.size(8.dp).clip(CircleShape).background(c.cat(category)))
-                    Spacer(Modifier.width(6.dp))
-                    Text(category.label, style = Type.sans(14.5.sp), color = c.ink2)
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                EXAMPLES.forEach { ex ->
-                    Box(
-                        Modifier.dashedBorder(c.lineStrong, 999.dp).clip(RoundedCornerShape(999.dp))
-                            .press(haptics = vm.haptics) {
-                                text = ex
-                                manual = null
-                            }.padding(horizontal = 14.dp, vertical = 9.dp),
-                    ) { Text(ex, style = Type.sans(13.5.sp), color = c.ink2) }
-                }
+            DayStrip(date, { pickedDate = it }, vm.haptics)
+            Spacer(Modifier.height(12.dp))
+            TimeWheels(start, { pickedStart = it }, vm.haptics)
+            Spacer(Modifier.height(8.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(Dates.dateLong(date), style = Type.sans(14.5.sp), color = c.ink2, modifier = Modifier.weight(1f))
+                Text(Dates.range(start, duration), style = Type.sans(14.5.sp, FontWeight.SemiBold), color = c.ink)
             }
             Section("Duración") {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -491,13 +553,16 @@ fun QuickAddSheet(vm: AppViewModel, open: Boolean, preset: QuickPreset?, onClose
                 }
             }
             if (teams.isNotEmpty()) Section("Calendario") { CalendarPicker(vm, teamId, { teamId = it }) }
+            Section("Repetir") { RepeatPicker(vm, repeat) { repeat = it } }
+            Section("Aviso") { ReminderPicker(vm, remind) { remind = it } }
             Section("Categoría") { TagPicker(vm, category) { manual = it } }
-            Spacer(Modifier.height(20.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Escribe la hora y el día; nosotros ordenamos el resto.", style = Type.sans(13.sp), color = c.ink3, modifier = Modifier.weight(1f))
-                Spacer(Modifier.width(10.dp))
-                PulsoButton("Crear", ::submit, enabled = text.isNotBlank(), trailing = LucideData.ArrowRight, height = 52.dp)
-            }
+            Spacer(Modifier.height(16.dp))
+        }
+        Divider()
+        Row(Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 22.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("Escribe o desliza: los dos valen.", style = Type.sans(13.sp), color = c.ink3, modifier = Modifier.weight(1f))
+            Spacer(Modifier.width(10.dp))
+            PulsoButton("Crear", ::submit, enabled = text.isNotBlank(), trailing = LucideData.ArrowRight, height = 52.dp)
         }
     }
 }
@@ -681,6 +746,7 @@ fun SettingsSheet(vm: AppViewModel, open: Boolean, onClose: () -> Unit, onTeams:
                 }
             }
 
+            CalendarLinkSection(vm)
             Section("Tema") {
                 Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     listOf("paper" to "Papel", "night" to "Noche").forEach { (key, label) ->
@@ -814,5 +880,71 @@ private fun SecretField(value: String, onChange: (String) -> Unit, placeholder: 
             value, onChange, singleLine = true, textStyle = Type.sans(16.sp).copy(color = c.ink), cursorBrush = SolidColor(c.accent),
             visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
         )
+    }
+}
+
+/** Enlace privado para ver esta agenda en Google Calendar, Apple o Outlook. */
+@Composable
+internal fun CalendarLinkSection(vm: AppViewModel) {
+    val c = LocalPulso.current
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var url by remember { mutableStateOf<String?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { url = runCatching { vm.calendarLink() }.getOrNull() }
+
+    fun run(block: suspend () -> Unit) {
+        error = null
+        scope.launch {
+            try {
+                block()
+            } catch (e: ApiException) {
+                error = e.message
+            }
+        }
+    }
+    fun copy(link: String) {
+        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        clipboard.setPrimaryClip(ClipData.newPlainText("MessOff", link))
+        vm.haptics.play(Haptic.Success)
+        vm.notify("Enlace copiado. Pégalo en Google Calendar: Añadir calendario › Desde URL.")
+    }
+
+    Section("Ver en otros calendarios", LucideData.CalendarDays) {
+        Text(
+            "Tu agenda en Google Calendar, Apple u Outlook, solo de lectura. Quien tenga el enlace puede verla; Google tarda unas horas en refrescarla.",
+            style = Type.sans(14.sp, lineHeight = 20.sp), color = c.ink2,
+        )
+        Spacer(Modifier.height(10.dp))
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            val link = url
+            if (link == null) {
+                PulsoChip("Crear enlace", false, {
+                    run {
+                        url = vm.createCalendarLink()
+                        url?.let(::copy)
+                    }
+                })
+            } else {
+                PulsoChip("Copiar enlace", false, { copy(link) })
+                PulsoChip("Cambiar enlace", false, {
+                    run {
+                        url = vm.createCalendarLink()
+                        url?.let(::copy)
+                    }
+                }, dashed = true)
+                PulsoChip("Desactivar", false, {
+                    run {
+                        vm.revokeCalendarLink()
+                        url = null
+                        vm.notify("Enlace desactivado")
+                    }
+                }, dashed = true)
+            }
+        }
+        error?.let {
+            Spacer(Modifier.height(6.dp))
+            Text(it, style = Type.bodySmall, color = c.accent)
+        }
     }
 }

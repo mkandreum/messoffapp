@@ -8,7 +8,12 @@ App **nativa** de [MessOff](https://github.com/mkandreum/MessOff) en Kotlin + Je
 - **Hoy**: estadísticas del día, la agenda como línea de tiempo, los huecos libres, la tarjeta oscura "Ahora mismo", las tareas pendientes y el ritmo semanal.
 - **Calendario**: vistas día, semana y mes. La hora queda fija a la izquierda, se marcan la columna de hoy y la línea de "ahora". Mantén pulsado un evento para arrastrarlo: cada franja da un tic háptico y al soltar notas un "snap", con opción de deshacer. Toca un hueco para crear un evento y desliza para cambiar de día o de mes.
 - **Detalle del evento**: título, fecha, hora, duración, mover a otro día, repetir (día siguiente, resto de la semana o 4 semanas), categoría, lugar, personas, subtareas y notas. Todo se guarda automáticamente. Puedes duplicar o eliminar el evento, con deshacer.
-- **Nuevo evento** en lenguaje natural ("Café con Lucía mañana 09:30"), con el mismo analizador que la web.
+- **Nuevo evento** en lenguaje natural ("Café con Lucía mañana 09:30"), con el mismo analizador que la web, o deslizando: tira de días y ruedas de hora y minutos con inercia y un tic por muesca.
+- **Eventos repetidos** (cada día, de lunes a viernes, cada semana, cada mes), editando toda la serie o solo un día.
+- **Avisos** locales antes de cada evento: funcionan sin red y sobreviven a reiniciar el móvil.
+- **Sin conexión**: la agenda se guarda en el móvil y los cambios se envían solos al volver la red.
+- **Widget** de inicio con lo que queda de hoy.
+- **Enlace ICS** para ver la agenda en Google Calendar, Apple u Outlook (solo lectura).
 - **Tareas**: desliza a la derecha para completar y a la izquierda para eliminar. Toca una tarea para editar su título, fecha y etiqueta. El botón de programar busca el primer hueco libre.
 - **Enfoque**: temporizador de 25, 50 o 90 minutos con un anillo animado. Sigue corriendo en segundo plano y, al terminar, avisa con una notificación y una vibración de logro. Mientras corre, una píldora flotante lo muestra en las demás pantallas.
 - **Equipos**: crea equipos, invita por email (con o sin cuenta) o comparte un enlace/código; los eventos de equipo los ven y editan todos. Chips para mostrar u ocultar cada calendario y selector de calendario al crear o editar eventos.

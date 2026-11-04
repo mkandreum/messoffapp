@@ -6,6 +6,8 @@ import android.os.SystemClock
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.view.HapticFeedbackConstants
+import android.view.View
 
 enum class Haptic {
     Selection, Light, Medium, Heavy, Success, Warning, Error, Tick, Snap, Swipe, Heartbeat, Celebrate
@@ -29,13 +31,29 @@ class Haptics(context: Context) {
 
     val supported: Boolean get() = vibrator?.hasVibrator() == true
 
+    /**
+     * Basta con clic y tic: muchos motores no tienen golpe seco ni subida, y eso
+     * no debe dejar el móvil con las formas de onda básicas para todo.
+     */
     private val rich: Boolean by lazy {
         Build.VERSION.SDK_INT >= 30 && vibrator?.areAllPrimitivesSupported(
             VibrationEffect.Composition.PRIMITIVE_CLICK,
             VibrationEffect.Composition.PRIMITIVE_TICK,
-            VibrationEffect.Composition.PRIMITIVE_THUD,
-            VibrationEffect.Composition.PRIMITIVE_QUICK_RISE,
         ) == true
+    }
+
+    private fun primitiveOr(primitive: Int, fallback: Int): Int =
+        if (Build.VERSION.SDK_INT >= 30 && vibrator?.areAllPrimitivesSupported(primitive) == true) primitive else fallback
+
+    /** Cada muesca de una rueda: el tic nativo del sistema, el más fino que hay. */
+    fun detent(view: View, strong: Boolean = false) {
+        if (!enabled) return
+        val constant = when {
+            strong -> HapticFeedbackConstants.CONTEXT_CLICK
+            Build.VERSION.SDK_INT >= 34 -> HapticFeedbackConstants.SEGMENT_FREQUENT_TICK
+            else -> HapticFeedbackConstants.CLOCK_TICK
+        }
+        view.performHapticFeedback(constant)
     }
 
     fun tick() {
@@ -59,8 +77,8 @@ class Haptics(context: Context) {
         val c = VibrationEffect.startComposition()
         val click = VibrationEffect.Composition.PRIMITIVE_CLICK
         val tick = VibrationEffect.Composition.PRIMITIVE_TICK
-        val thud = VibrationEffect.Composition.PRIMITIVE_THUD
-        val rise = VibrationEffect.Composition.PRIMITIVE_QUICK_RISE
+        val thud = primitiveOr(VibrationEffect.Composition.PRIMITIVE_THUD, click)
+        val rise = primitiveOr(VibrationEffect.Composition.PRIMITIVE_QUICK_RISE, click)
         when (kind) {
             Haptic.Selection -> c.addPrimitive(tick, 0.7f)
             Haptic.Light -> c.addPrimitive(click, 0.45f)

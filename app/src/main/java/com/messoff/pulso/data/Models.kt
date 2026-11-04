@@ -68,6 +68,12 @@ data class Task(
     val due: String? = null,
     val tag: String = "personal",
     val done: Boolean = false,
+    /** Si es de un equipo, la ven y editan todos sus miembros. */
+    val teamId: String? = null,
+    val assigneeId: String? = null,
+    val assigneeName: String? = null,
+    val authorId: String? = null,
+    val authorName: String? = null,
 ) {
     val cat: Category get() = Category.of(tag)
 }

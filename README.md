@@ -18,6 +18,7 @@ App **nativa** de [MessOff](https://github.com/mkandreum/MessOff) en Kotlin + Je
 - **Enfoque**: temporizador de 25, 50 o 90 minutos con un anillo animado. Sigue corriendo en segundo plano y, al terminar, avisa con una notificación y una vibración de logro. Mientras corre, una píldora flotante lo muestra en las demás pantallas.
 - **Equipos**: crea equipos, invita por email (con o sin cuenta) o comparte un enlace/código; los eventos de equipo los ven y editan todos. Chips para mostrar u ocultar cada calendario y selector de calendario al crear o editar eventos.
 - **Vistas del calendario**: Día, Semana, **Agenda** (por defecto: lista por días con «ahora», días pasados plegados), y Mes. Se recuerda la elección.
+- **Tareas de equipo**: una tarea puede vivir en un equipo y tener a alguien asignado. Filtra por «Para mí», personales o cada equipo. En «Hoy» no salen las asignadas a otra persona.
 - **Búsqueda** de eventos, tareas, secciones y acciones.
 - **Cuenta**: nombre, tema papel o noche, vibración (con patrones de prueba), contraseña, cerrar sesión en todos los dispositivos y eliminar la cuenta.
 

@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.messoff.pulso.AppViewModel
+import com.messoff.pulso.AuthState
 import com.messoff.pulso.data.Category
 import com.messoff.pulso.data.Task
 import com.messoff.pulso.haptics.Haptic
@@ -73,6 +74,7 @@ import com.messoff.pulso.ui.icons.LucideData
 import com.messoff.pulso.ui.icons.LucideIcon
 import com.messoff.pulso.ui.theme.LocalPulso
 import com.messoff.pulso.ui.theme.Type
+import com.messoff.pulso.ui.theme.teamColor
 import com.messoff.pulso.util.Dates
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -87,12 +89,25 @@ fun TasksScreen(vm: AppViewModel, onSearch: () -> Unit, onSettings: () -> Unit) 
     var filter by rememberSaveable { mutableStateOf(Filter.Todas) }
     var draft by rememberSaveable { mutableStateOf("") }
     var tag by rememberSaveable { mutableStateOf(Category.Personal) }
+    val teams by vm.teams.collectAsState()
+    val auth by vm.auth.collectAsState()
+    val myId = (auth as? AuthState.SignedIn)?.user?.id
+    // Qué tareas se ven: todas, las mías, las personales o las de un equipo.
+    var scope by rememberSaveable { mutableStateOf("todas") }
+    var teamId by rememberSaveable { mutableStateOf<String?>(null) }
+    var assigneeId by rememberSaveable { mutableStateOf<String?>(null) }
 
     val today = Dates.iso(Dates.today())
     val tomorrow = Dates.iso(Dates.today().plusDays(1))
     val weekEnd = Dates.iso(Dates.today().plusDays(6))
-    val pending = tasks.filter { !it.done }
-    val completed = tasks.filter { it.done }
+    val scoped = when (scope) {
+        "todas" -> tasks
+        "mias" -> tasks.filter { it.assigneeId == myId || (it.teamId == null && it.assigneeId == null) }
+        "personales" -> tasks.filter { it.teamId == null }
+        else -> tasks.filter { it.teamId == scope }
+    }
+    val pending = scoped.filter { !it.done }
+    val completed = scoped.filter { it.done }
     val visible = when (filter) {
         Filter.Hechas -> completed
         Filter.Hoy -> pending.filter { it.due != null && it.due <= today }
@@ -113,13 +128,13 @@ fun TasksScreen(vm: AppViewModel, onSearch: () -> Unit, onSettings: () -> Unit) 
         }
         if (items.isEmpty()) null else key to items
     }
-    val progress = if (tasks.isEmpty()) 0f else completed.size.toFloat() / tasks.size
+    val progress = if (scoped.isEmpty()) 0f else completed.size.toFloat() / scoped.size
     val animatedProgress by animateFloatAsState(progress, spring(0.8f, 120f), label = "progress")
 
     fun submit() {
         val title = draft.trim()
         if (title.isEmpty()) return
-        vm.addTask(title, today, tag)
+        vm.addTask(title, today, tag, teamId, assigneeId)
         draft = ""
         vm.haptics.play(Haptic.Success)
         vm.notify("Tarea añadida a la bandeja")
@@ -156,6 +171,14 @@ fun TasksScreen(vm: AppViewModel, onSearch: () -> Unit, onSettings: () -> Unit) 
                                 )
                             }
                         }
+                        if (teams.isNotEmpty()) {
+                            Spacer(Modifier.height(12.dp))
+                            CalendarPicker(vm, teamId, {
+                                teamId = it
+                                assigneeId = null
+                            })
+                            AssigneePicker(vm, teamId, assigneeId) { assigneeId = it }
+                        }
                         Spacer(Modifier.height(12.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             TagPicker(vm, tag) { tag = it }
@@ -164,6 +187,14 @@ fun TasksScreen(vm: AppViewModel, onSearch: () -> Unit, onSettings: () -> Unit) 
                                 Modifier.clip(RoundedCornerShape(12.dp)).background(if (draft.isBlank()) c.ink3.copy(alpha = 0.5f) else c.ink)
                                     .press(enabled = draft.isNotBlank(), onClick = ::submit).padding(horizontal = 16.dp, vertical = 10.dp),
                             ) { Text("Añadir", style = Type.sans(15.sp, FontWeight.SemiBold), color = c.onInk) }
+                        }
+                    }
+                    if (teams.isNotEmpty()) {
+                        Spacer(Modifier.height(14.dp))
+                        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            (listOf("todas" to "Todas", "mias" to "Para mí", "personales" to "Personales") + teams.map { it.id to it.name }).forEach { (id, name) ->
+                                PulsoChip(name, scope == id, { scope = id }, dashed = scope != id, haptics = vm.haptics)
+                            }
                         }
                     }
                     Spacer(Modifier.height(14.dp))
@@ -200,7 +231,7 @@ fun TasksScreen(vm: AppViewModel, onSearch: () -> Unit, onSettings: () -> Unit) 
                             Box(Modifier.fillMaxWidth(animatedProgress).height(5.dp).clip(RoundedCornerShape(3.dp)).background(c.accent))
                         }
                         Spacer(Modifier.width(12.dp))
-                        Text("${completed.size} de ${tasks.size} · ${(progress * 100).roundToInt()}%", style = Type.sans(13.sp), color = c.ink3)
+                        Text("${completed.size} de ${scoped.size} · ${(progress * 100).roundToInt()}%", style = Type.sans(13.sp), color = c.ink3)
                     }
                 }
             }
@@ -254,6 +285,25 @@ fun TagPicker(vm: AppViewModel, selected: Category, onSelect: (Category) -> Unit
     }
 }
 
+/** Quién se encarga: alguien del equipo o nadie todavía. */
+@Composable
+fun AssigneePicker(vm: AppViewModel, teamId: String?, value: String?, onChange: (String?) -> Unit) {
+    val teams by vm.teams.collectAsState()
+    val auth by vm.auth.collectAsState()
+    val myId = (auth as? AuthState.SignedIn)?.user?.id
+    val team = teams.firstOrNull { it.id == teamId } ?: return
+    FlowRow(
+        Modifier.padding(top = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        PulsoChip("Sin asignar", value == null, { onChange(null) }, haptics = vm.haptics)
+        team.members.forEach { member ->
+            PulsoChip(if (member.id == myId) "Yo" else member.name, value == member.id, { onChange(member.id) }, haptics = vm.haptics)
+        }
+    }
+}
+
 private const val THRESHOLD = 90f
 
 @Composable
@@ -275,6 +325,10 @@ fun TaskRow(
     val overdue = task.due != null && !task.done && task.due < today
     val dueLabel = task.due?.let { Dates.relativeDay(Dates.parse(it)) } ?: "Sin fecha"
     val px = offset.value / localDensity.density
+    val teams by vm.teams.collectAsState()
+    val auth by vm.auth.collectAsState()
+    val myId = (auth as? AuthState.SignedIn)?.user?.id
+    val team = teams.firstOrNull { it.id == task.teamId }
 
     fun toggle() {
         vm.haptics.play(if (task.done) Haptic.Light else Haptic.Success)
@@ -378,6 +432,15 @@ fun TaskRow(
                         CategoryDot(task.cat, 7.dp)
                         Spacer(Modifier.width(6.dp))
                         Text(dueLabel, style = Type.sans(13.sp, if (overdue) FontWeight.SemiBold else FontWeight.Normal), color = if (overdue) c.accent else c.ink3)
+                        if (team != null) {
+                            Spacer(Modifier.width(8.dp))
+                            Box(Modifier.size(7.dp).clip(CircleShape).background(teamColor(team.color, c.night)))
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                "${team.name} · ${if (task.assigneeId == myId) "Yo" else task.assigneeName ?: "Sin asignar"}",
+                                style = Type.sans(13.sp), color = c.ink2, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
                 if (onSchedule != null && !task.done) {
@@ -412,6 +475,11 @@ fun TaskRow(
                             if (value == null) vm.updateTask(task.id, clearDue = true) else vm.updateTask(task.id, due = value)
                         }, haptics = vm.haptics)
                     }
+                }
+                if (teams.isNotEmpty()) {
+                    Spacer(Modifier.height(10.dp))
+                    CalendarPicker(vm, task.teamId, { vm.placeTask(task.id, it, null) }, enabled = task.authorId == null || task.authorId == myId)
+                    AssigneePicker(vm, task.teamId, task.assigneeId) { vm.placeTask(task.id, task.teamId, it) }
                 }
                 Spacer(Modifier.height(10.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {

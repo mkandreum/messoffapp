@@ -120,6 +120,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _tasks = MutableStateFlow<List<Task>>(emptyList())
     val tasks: StateFlow<List<Task>> = _tasks.asStateFlow()
 
+    /** Sin las de equipo que tiene asignadas otra persona: lo que te toca a ti. */
+    val myTasks: StateFlow<List<Task>> = combine(_tasks, _auth) { list, auth ->
+        val me = (auth as? AuthState.SignedIn)?.user?.id
+        list.filter { it.assigneeId == null || it.assigneeId == me }
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     private val _loading = MutableStateFlow(false)
     val loading: StateFlow<Boolean> = _loading.asStateFlow()
 
@@ -809,8 +815,15 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun newChecklistItem(text: String) = ChecklistItem(uid(), text, false)
 
-    fun addTask(title: String, due: String?, tag: Category): Task {
-        val task = Task(uid(), title, due, tag.key, false)
+    private fun personName(teamId: String?, id: String?) =
+        _teams.value.firstOrNull { it.id == teamId }?.members?.firstOrNull { it.id == id }?.name
+
+    fun addTask(title: String, due: String?, tag: Category, teamId: String? = null, assigneeId: String? = null): Task {
+        val me = (_auth.value as? AuthState.SignedIn)?.user
+        val task = Task(
+            uid(), title, due, tag.key, false, teamId, assigneeId.takeIf { teamId != null },
+            personName(teamId, assigneeId), me?.id, me?.name,
+        )
         _tasks.update { listOf(task) + it }
         send("POST", "/tasks", api.encode(task)) { e ->
             _tasks.update { list -> list.filterNot { it.id == task.id } }
@@ -838,6 +851,18 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         send("PATCH", "/tasks/$id", api.obj(*body.toTypedArray())) { e ->
             _tasks.update { list -> list.map { if (it.id == id) previous else it } }
             fail(e, "No se pudo actualizar la tarea")
+        }
+    }
+
+    /** Cambia el equipo de la tarea y quién se encarga. */
+    fun placeTask(id: String, teamId: String?, assigneeId: String?) {
+        val previous = _tasks.value.firstOrNull { it.id == id } ?: return
+        val assignee = assigneeId.takeIf { teamId != null }
+        val next = previous.copy(teamId = teamId, assigneeId = assignee, assigneeName = personName(teamId, assignee))
+        _tasks.update { list -> list.map { if (it.id == id) next else it } }
+        send("PATCH", "/tasks/$id", api.obj("teamId" to teamId, "assigneeId" to assignee)) { e ->
+            _tasks.update { list -> list.map { if (it.id == id) previous else it } }
+            fail(e, "No se pudo asignar la tarea")
         }
     }
 

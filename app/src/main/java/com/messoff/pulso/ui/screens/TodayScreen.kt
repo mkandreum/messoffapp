@@ -85,7 +85,7 @@ fun TodayScreen(
 ) {
     val c = LocalPulso.current
     val events by vm.events.collectAsState()
-    val tasks by vm.tasks.collectAsState()
+    val tasks by vm.myTasks.collectAsState()
     val now by vm.now.collectAsState()
     val auth by vm.auth.collectAsState()
     val first = (auth as? AuthState.SignedIn)?.user?.name?.trim()?.split(" ")?.firstOrNull().orEmpty().ifBlank { "tú" }
